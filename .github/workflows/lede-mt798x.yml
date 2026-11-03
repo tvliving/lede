@@ -1,8 +1,8 @@
 #=====================================================================================
 # Build Lede (coolsnowwolf/lede) for ALL MT798x devices (filogic target)
-# 覆盖 lede 源码 filogic.mk 中全部 62 台设备：
-#   MT7981 系 34 台 / MT7986 系 21 台 / MT7987+MT7988 系 7 台
-# 每天 14:00（北京时间）自动编译，手动触发可选平台
+# 单 job 顺序编译：MT7981 → MT7986 → MT7988，每个平台编完把固件保留到 out/ 目录，最后统一上传
+# 覆盖 lede 源码 filogic.mk 中全部 62 台设备（34 + 21 + 7）
+# 每天 14:00（北京时间）自动编译；手动触发可选平台
 # Release 标签 Lede-MT7981-YYYY-MM-DD 等，保留历史，不删除
 #=====================================================================================
 
@@ -35,102 +35,13 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          #================= MT7981 系（34 台，lede filogic.mk 全量）=================
-          - CHIP: MT7981
-            devices: >-
-              airpi_ap3000m
-              abt_asr3000
-              cetron_ct3003
-              cetron_ct3003-mod
-              cmcc_a10
-              cmcc_a10-mod
-              cmcc_rax3000m-emmc
-              cmcc_rax3000m-nand
-              cmcc_rax3000me-emmc
-              cmcc_rax3000me-nand
-              cmcc_xr30-emmc
-              cmcc_xr30-nand
-              cudy_tr3000-256mb-v1
-              cudy_tr3000-mod
-              cudy_tr3000-v1
-              fzs_5gcpe-p3
-              glinet_gl-mt2500
-              glinet_gl-mt3000
-              glinet_gl-x3000
-              glinet_gl-xe3000
-              h3c_magic-nx30-pro
-              huasifei_wh3000-emmc
-              huasifei_wh3000-pro
-              huasifei_ws3006
-              huasifei_ws3009
-              imou_lc-hx3001
-              jcg_q30-pro
-              konka_komi-a31
-              nokia_ea0326gmp
-              openembed_som7981
-              qihoo_360t7
-              tenbay_wr3000k
-              xiaomi_mi-router-ax3000t
-              xiaomi_mi-router-wr30u
-          #================= MT7986 系（21 台，lede filogic.mk 全量）=================
-          - CHIP: MT7986
-            devices: >-
-              asus_tuf-ax4200
-              asus_tuf-ax6000
-              bananapi_bpi-r3
-              bananapi_bpi-r3-mini-emmc
-              bananapi_bpi-r3-mini-nand
-              clx_s20l
-              glinet_gl-mt6000
-              hf_m7986r1-emmc
-              hf_m7986r1-nand
-              jdcloud_re-cs-05
-              mediatek_mt7986a-rfb
-              mediatek_mt7986b-rfb
-              netcore_n60
-              netcore_n60-pro
-              ruijie_rg-x60-pro
-              tplink_tl-xdr4288
-              tplink_tl-xdr6086
-              tplink_tl-xdr6088
-              tplink_tl-xtr8488
-              xiaomi_redmi-router-ax6000
-              xiaomi_redmi-router-ax6000-stock
-          #================= MT7987/MT7988 系（7 台，lede filogic.mk 全量）=================
-          - CHIP: MT7988
-            devices: >-
-              bananapi_bpi-r4
-              bananapi_bpi-r4-poe
-              bananapi_bpi-r4-lite
-              glinet_gl-mt3600be
-              mediatek_mt7988a-rfb
-              tenda_be12-pro
-              tplink_tl-7dr7299-v1
-
-    name: build-${{ matrix.CHIP }}
+    timeout-minutes: 350
 
     steps:
-      # GitHub 校验器不允许在 job 级 if 使用 matrix 上下文，改在步骤级过滤：
-      # 手动触发时按所选平台过滤；定时触发（无输入）编全部平台
-      - name: 判断是否需要编译本平台
-        id: filter
-        run: |
-          if [[ "${{ github.event_name }}" != "workflow_dispatch" || "${{ inputs.chips }}" == "all" || "${{ inputs.chips }}" == "${{ matrix.CHIP }}" ]]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo ">>> 本平台（${{ matrix.CHIP }}）未被选中，跳过全部步骤"
-          fi
-
       - name: 清理 runner 磁盘空间
-        if: steps.filter.outputs.run == 'true'
         run: |
-          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          # 注意：不要删除 /etc/apt/sources.list.d/ —— ubuntu-24.04 的 apt 源就在这里
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker image prune --all --force > /dev/null 2>&1 || true
           sudo -E apt-get -y purge azure-cli* ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
           sudo -E apt-get -y autoremove --purge
@@ -138,23 +49,20 @@ jobs:
           df -hT
 
       - name: 初始化编译环境
-        if: steps.filter.outputs.run == 'true'
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo -E apt-get -y update
-          sudo -E apt-get -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
-            bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib \
-            g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev \
-            libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libncursesw5-dev \
-            libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp \
-            nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils \
-            python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs \
-            unzip vim wget xmlto xxd zlib1g-dev
+          sudo -E apt-get -y install build-essential clang cmake cpio curl device-tree-compiler ecj fastjar \
+            flex gawk gettext gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool \
+            libelf-dev libglib2.0-dev libgmp-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
+            libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm \
+            lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip \
+            python3-ply python3-docutils python3-pyelftools qemu-utils re2c rsync scons squashfs-tools \
+            subversion swig texinfo unzip vim wget xmlto xxd zlib1g-dev
           git config --global user.name "GitHub Actions" && git config --global user.email "actions@github.com"
 
-      - name: 克隆 lede 源码
-        if: steps.filter.outputs.run == 'true'
+      - name: 克隆 lede 源码并更新 feeds
         working-directory: ${{ github.workspace }}
         run: |
           df -hT $PWD
@@ -162,94 +70,135 @@ jobs:
           cd lede
           echo "================= 最新提交 ================="
           git log -1 --format="commit: %H  date: %ci"
-
-      - name: 更新 feeds
-        if: steps.filter.outputs.run == 'true'
-        working-directory: ${{ github.workspace }}/lede
-        run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: 生成 .config（${{ matrix.CHIP }} 设备列表）
-        if: steps.filter.outputs.run == 'true'
+      #===============================================================================
+      # 顺序编译：MT7981 → MT7986 → MT7988
+      # 每个平台编完把成品固件拷到 out/<平台>/ 保留，再继续下一个
+      # 三个平台同属 filogic 子目标：工具链和软件包只编译一次，后两轮基本只是打包
+      #===============================================================================
+      - name: 顺序编译全部平台
         working-directory: ${{ github.workspace }}/lede
         run: |
-          {
-            echo "CONFIG_TARGET_mediatek=y"
-            echo "CONFIG_TARGET_mediatek_filogic=y"
-            # 一次编译多机型（Multi-Profile）
-            echo "CONFIG_TARGET_MULTI_PROFILE=y"
-            echo "CONFIG_TARGET_PER_DEVICE_ROOTFS=y"
-            # 设备列表：每行一台，设备 ID 必须与 target/linux/mediatek/image/filogic.mk 一致
-            for d in ${{ matrix.devices }}; do
-              echo "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_${d}=y"
-            done
-            # LuCI 中文及常用默认（lede/lean 系自带包）
-            echo "CONFIG_PACKAGE_luci=y"
-            echo "CONFIG_PACKAGE_luci-compat=y"
-            echo "CONFIG_PACKAGE_default-settings-chn=y"
-          } > .config
-          make defconfig
-          echo "================= 已选设备数 ================="
-          grep -c "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE" .config || true
-          grep "CONFIG_TARGET_DEVICE" .config | sed 's/CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_//;s/=y//'
+          # 手动触发可选单平台，定时/手动 all 编全部
+          chips_to_build="MT7981 MT7986 MT7988"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.chips }}" != "all" ]]; then
+            chips_to_build="${{ inputs.chips }}"
+          fi
+          echo "本次编译平台：$chips_to_build"
 
-      - name: 下载软件包
-        if: steps.filter.outputs.run == 'true'
-        working-directory: ${{ github.workspace }}/lede
-        run: |
-          make download -j$(nproc)
-          find dl -size -1024c -exec ls -l {} \;
-          find dl -size -1024c -exec rm -f {} \;
+          device_list_for() {
+            case "$1" in
+              MT7981)
+                echo "airpi_ap3000m abt_asr3000 cetron_ct3003 cetron_ct3003-mod cmcc_a10 cmcc_a10-mod cmcc_rax3000m-emmc cmcc_rax3000m-nand cmcc_rax3000me-emmc cmcc_rax3000me-nand cmcc_xr30-emmc cmcc_xr30-nand cudy_tr3000-256mb-v1 cudy_tr3000-mod cudy_tr3000-v1 fzs_5gcpe-p3 glinet_gl-mt2500 glinet_gl-mt3000 glinet_gl-x3000 glinet_gl-xe3000 h3c_magic-nx30-pro huasifei_wh3000-emmc huasifei_wh3000-pro huasifei_ws3006 huasifei_ws3009 imou_lc-hx3001 jcg_q30-pro konka_komi-a31 nokia_ea0326gmp openembed_som7981 qihoo_360t7 tenbay_wr3000k xiaomi_mi-router-ax3000t xiaomi_mi-router-wr30u"
+                ;;
+              MT7986)
+                echo "asus_tuf-ax4200 asus_tuf-ax6000 bananapi_bpi-r3 bananapi_bpi-r3-mini-emmc bananapi_bpi-r3-mini-nand clx_s20l glinet_gl-mt6000 hf_m7986r1-emmc hf_m7986r1-nand jdcloud_re-cs-05 mediatek_mt7986a-rfb mediatek_mt7986b-rfb netcore_n60 netcore_n60-pro ruijie_rg-x60-pro tplink_tl-xdr4288 tplink_tl-xdr6086 tplink_tl-xdr6088 tplink_tl-xtr8488 xiaomi_redmi-router-ax6000 xiaomi_redmi-router-ax6000-stock"
+                ;;
+              MT7988)
+                echo "bananapi_bpi-r4 bananapi_bpi-r4-poe bananapi_bpi-r4-lite glinet_gl-mt3600be mediatek_mt7988a-rfb tenda_be12-pro tplink_tl-7dr7299-v1"
+                ;;
+            esac
+          }
 
-      - name: 编译固件
-        if: steps.filter.outputs.run == 'true'
-        working-directory: ${{ github.workspace }}/lede
-        run: |
-          echo -e "$(nproc) thread compile"
-          make -j$(nproc) || make -j1 V=s
-          echo "================= 编译产物 ================="
-          ls -lh bin/targets/mediatek/filogic/ 2>/dev/null
+          build_chip() {
+            local chip="$1"
+            local devices; devices=$(device_list_for "$chip")
+            echo ""
+            echo "############################################################"
+            echo "##########  开始编译 $chip（$(echo $devices | wc -w) 台设备）  ##########"
+            echo "############################################################"
+
+            {
+              echo "CONFIG_TARGET_mediatek=y"
+              echo "CONFIG_TARGET_mediatek_filogic=y"
+              echo "CONFIG_TARGET_MULTI_PROFILE=y"
+              echo "CONFIG_TARGET_PER_DEVICE_ROOTFS=y"
+              for d in $devices; do
+                echo "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_${d}=y"
+              done
+              echo "CONFIG_PACKAGE_luci=y"
+              echo "CONFIG_PACKAGE_luci-compat=y"
+              echo "CONFIG_PACKAGE_default-settings-chn=y"
+            } > .config
+            make defconfig
+
+            echo ">>> [$chip] 已选设备："
+            grep "CONFIG_TARGET_DEVICE" .config | sed 's/CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_//;s/=y//' | tr '\n' ' '
+            echo ""
+
+            echo ">>> [$chip] 下载软件包"
+            make download -j$(nproc)
+            find dl -size -1024c -exec rm -f {} \;
+
+            echo ">>> [$chip] 开始编译"
+            if ! make -j$(nproc); then
+              echo ">>> [$chip] 并行编译失败，改用单线程重试以定位错误"
+              make -j1 V=s || { echo ">>> [$chip] ❌ 编译失败"; exit 1; }
+            fi
+
+            echo ">>> [$chip] 收集固件到 out/$chip/"
+            mkdir -p "$GITHUB_WORKSPACE/out/$chip"
+            find bin/targets/mediatek/filogic -type f \( -name "*squashfs-sysupgrade*" -o -name "*squashfs-factory*" \) \
+              ! -name "*json*" -exec cp {} "$GITHUB_WORKSPACE/out/$chip/" \;
+            ls -lh "$GITHUB_WORKSPACE/out/$chip/"
+            local n; n=$(ls "$GITHUB_WORKSPACE/out/$chip" | wc -l)
+            if [[ "$n" -eq 0 ]]; then
+              echo ">>> [$chip] ❌ 没有产出任何固件"
+              exit 1
+            fi
+            echo ">>> [$chip] ✅ 完成，共 $n 个固件"
+          }
+
+          for chip in $chips_to_build; do
+            build_chip "$chip"
+          done
+
+          echo ""
+          echo "================= 全部平台编译完成，out 目录汇总 ================="
+          du -sh "$GITHUB_WORKSPACE"/out/*
+          df -hT
 
       - name: 上传到 Release
-        if: steps.filter.outputs.run == 'true'
         working-directory: ${{ github.workspace }}/lede
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="Lede-${{ matrix.CHIP }}-$(TZ=Asia/Shanghai date +%Y-%m-%d)"
-          echo "目标标签：$TAG"
+          set -e
+          for chip in MT7981 MT7986 MT7988; do
+            dir="$GITHUB_WORKSPACE/out/$chip"
+            [[ -d "$dir" && -n "$(ls -A "$dir" 2>/dev/null)" ]] || { echo ">>> $chip 无固件，跳过上传"; continue; }
 
-          mkdir -p release_files
-          # 只收成品固件（sysupgrade/factory），排除元数据/校验文件
-          find bin/targets/mediatek/filogic -type f \( -name "*squashfs-sysupgrade*" -o -name "*squashfs-factory*" \) \
-            ! -name "*json*" -exec cp {} release_files/ \;
-          ls -lh release_files/
-          [[ -n "$(ls -A release_files 2>/dev/null)" ]] || { echo "❌ 没有编译产物，检查上方编译日志"; exit 1; }
+            TAG="Lede-${chip}-$(TZ=Asia/Shanghai date +%Y-%m-%d)"
+            echo ">>> 上传 $chip → $TAG（$(ls "$dir" | wc -l) 个文件）"
 
-          # 只创建、不删除：已存在则复用，历史版本全部保留
-          {
-            echo "### Lede for ${{ matrix.CHIP }}"
-            echo "- 源码：[coolsnowwolf/lede](${REPO_URL}/tree/${REPO_BRANCH})"
-            echo "- 编译时间：$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S') (UTC+8)"
-            echo "- 默认 IP：192.168.1.1 / 用户名 root / 密码：无"
-            echo "### 固件列表"
-            ls release_files/
-          } > notes.md
+            {
+              echo "### Lede for $chip"
+              echo "- 源码：[coolsnowwolf/lede](${REPO_URL}/tree/${REPO_BRANCH})"
+              echo "- 编译时间：$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S') (UTC+8)"
+              echo "- 默认 IP：192.168.1.1 / 用户名 root / 密码：无"
+              echo "### 固件列表"
+              ls "$dir"
+            } > notes_$chip.md
 
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
-            gh release create "$TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "Lede ${{ matrix.CHIP }} ($(TZ=Asia/Shanghai date +%Y-%m-%d))" \
-              --notes-file notes.md
+            # 只创建、不删除：已存在则复用，历史版本全部保留
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+              gh release create "$TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --title "Lede $chip ($(TZ=Asia/Shanghai date +%Y-%m-%d))" \
+                --notes-file "notes_$chip.md"
 
-          for i in 1 2 3 4 5; do
-            if gh release upload "$TAG" release_files/* --repo "$GITHUB_REPOSITORY" --clobber; then
-              echo "✅ 上传完成"
-              exit 0
-            fi
-            echo "⚠️ 第 $i 次上传失败，10 秒后重试"
-            sleep 10
+            ok=0
+            for i in 1 2 3 4 5; do
+              if gh release upload "$TAG" "$dir"/* --repo "$GITHUB_REPOSITORY" --clobber; then
+                echo ">>> ✅ $chip 上传完成"
+                ok=1
+                break
+              fi
+              echo ">>> ⚠️ $chip 第 $i 次上传失败，10 秒后重试"
+              sleep 10
+            done
+            [[ "$ok" -eq 1 ]] || { echo ">>> ❌ $chip 上传 5 次均失败"; exit 1; }
           done
-          echo "❌ 上传 5 次均失败"
-          exit 1
+          echo ">>> 🎉 全部上传完成"
