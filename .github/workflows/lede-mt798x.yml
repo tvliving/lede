@@ -36,8 +36,6 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
-    # 手动触发时按所选平台过滤；定时触发（无输入）编全部平台
-    if: github.event_name != 'workflow_dispatch' || inputs.chips == 'all' || inputs.chips == matrix.CHIP
     strategy:
       fail-fast: false
       matrix:
@@ -117,7 +115,20 @@ jobs:
     name: build-${{ matrix.CHIP }}
 
     steps:
+      # GitHub 校验器不允许在 job 级 if 使用 matrix 上下文，改在步骤级过滤：
+      # 手动触发时按所选平台过滤；定时触发（无输入）编全部平台
+      - name: 判断是否需要编译本平台
+        id: filter
+        run: |
+          if [[ "${{ github.event_name }}" != "workflow_dispatch" || "${{ inputs.chips }}" == "all" || "${{ inputs.chips }}" == "${{ matrix.CHIP }}" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo ">>> 本平台（${{ matrix.CHIP }}）未被选中，跳过全部步骤"
+          fi
+
       - name: 清理 runner 磁盘空间
+        if: steps.filter.outputs.run == 'true'
         run: |
           sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker image prune --all --force > /dev/null 2>&1 || true
@@ -127,6 +138,7 @@ jobs:
           df -hT
 
       - name: 初始化编译环境
+        if: steps.filter.outputs.run == 'true'
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -142,6 +154,7 @@ jobs:
           git config --global user.name "GitHub Actions" && git config --global user.email "actions@github.com"
 
       - name: 克隆 lede 源码
+        if: steps.filter.outputs.run == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           df -hT $PWD
@@ -151,12 +164,14 @@ jobs:
           git log -1 --format="commit: %H  date: %ci"
 
       - name: 更新 feeds
+        if: steps.filter.outputs.run == 'true'
         working-directory: ${{ github.workspace }}/lede
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
       - name: 生成 .config（${{ matrix.CHIP }} 设备列表）
+        if: steps.filter.outputs.run == 'true'
         working-directory: ${{ github.workspace }}/lede
         run: |
           {
@@ -180,6 +195,7 @@ jobs:
           grep "CONFIG_TARGET_DEVICE" .config | sed 's/CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_//;s/=y//'
 
       - name: 下载软件包
+        if: steps.filter.outputs.run == 'true'
         working-directory: ${{ github.workspace }}/lede
         run: |
           make download -j$(nproc)
@@ -187,6 +203,7 @@ jobs:
           find dl -size -1024c -exec rm -f {} \;
 
       - name: 编译固件
+        if: steps.filter.outputs.run == 'true'
         working-directory: ${{ github.workspace }}/lede
         run: |
           echo -e "$(nproc) thread compile"
@@ -195,6 +212,7 @@ jobs:
           ls -lh bin/targets/mediatek/filogic/ 2>/dev/null
 
       - name: 上传到 Release
+        if: steps.filter.outputs.run == 'true'
         working-directory: ${{ github.workspace }}/lede
         env:
           GH_TOKEN: ${{ github.token }}
