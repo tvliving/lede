@@ -102,6 +102,20 @@ jobs:
             esac
           }
 
+          # BPI-R3/R4/R4-Lite/RFB 等设备的复合镜像（sdcard.img.gz / 多套 ARTIFACT）
+          # 需要多套 bl2 + u-boot 引导，这些是独立的 boot 包，必须显式选入 .config
+          # （uboot 包自带 trusted-firmware-a 依赖，下面再显式补关键 TF-A 变体双保险）
+          extra_pkgs_for() {
+            case "$1" in
+              MT7986)
+                echo "uboot-mediatek-mt7986_bananapi_bpi_r3-emmc uboot-mediatek-mt7986_bananapi_bpi_r3-sdmmc uboot-mediatek-mt7986_bananapi_bpi_r3-snand uboot-mediatek-mt7986_bananapi_bpi_r3-nor uboot-mediatek-mt7986_rfb trusted-firmware-a-mt7986-sdmmc-ddr4 trusted-firmware-a-mt7986-spim-nand-ddr4 trusted-firmware-a-mt7986-emmc-ddr4 trusted-firmware-a-mt7986-nor-ddr4 trusted-firmware-a-mt7986-snand-ddr4 trusted-firmware-a-mt7986-spim-nand-ubi-ddr4"
+                ;;
+              MT7988)
+                echo "uboot-mediatek-mt7988_bananapi_bpi_r4-emmc uboot-mediatek-mt7988_bananapi_bpi_r4-sdmmc uboot-mediatek-mt7988_bananapi_bpi_r4-snand uboot-mediatek-mt7988_bananapi_bpi_r4_poe-emmc uboot-mediatek-mt7988_bananapi_bpi_r4_poe-sdmmc uboot-mediatek-mt7988_bananapi_bpi_r4_poe-snand uboot-mediatek-mt7987_bananapi_bpi_r4_lite-emmc uboot-mediatek-mt7987_bananapi_bpi_r4_lite-sdmmc uboot-mediatek-mt7987_bananapi_bpi_r4_lite-snand uboot-mediatek-mt7987_bananapi_bpi_r4_lite-nor trusted-firmware-a-mt7987-emmc-comb trusted-firmware-a-mt7987-nor-comb trusted-firmware-a-mt7987-sdmmc-comb trusted-firmware-a-mt7987-spim-nand0-ubi-comb trusted-firmware-a-mt7987-spim-nand2-ubi-comb trusted-firmware-a-mt7988-emmc-comb trusted-firmware-a-mt7988-nor-comb trusted-firmware-a-mt7988-sdmmc-comb trusted-firmware-a-mt7988-snand-comb trusted-firmware-a-mt7988-snand-ubi-comb trusted-firmware-a-mt7988-spim-nand-comb trusted-firmware-a-mt7988-spim-nand-ubi-comb trusted-firmware-a-mt7988-tplink-tl-7dr7299-comb"
+                ;;
+            esac
+          }
+
           build_chip() {
             local chip="$1"
             local devices; devices=$(device_list_for "$chip")
@@ -117,6 +131,9 @@ jobs:
               echo "CONFIG_TARGET_PER_DEVICE_ROOTFS=y"
               for d in $devices; do
                 echo "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_${d}=y"
+              done
+              for p in $(extra_pkgs_for "$chip"); do
+                echo "CONFIG_PACKAGE_${p}=y"
               done
               echo "CONFIG_PACKAGE_luci=y"
               echo "CONFIG_PACKAGE_luci-compat=y"
@@ -135,7 +152,7 @@ jobs:
             echo ">>> [$chip] 开始编译"
             if ! make -j$(nproc); then
               echo ">>> [$chip] 并行编译失败，改用单线程重试以定位错误"
-              make -j1 V=s || { echo ">>> [$chip] ❌ 编译失败"; exit 1; }
+              make -j1 V=s || { echo ">>> [$chip] ❌ 编译失败"; return 1; }
             fi
 
             echo ">>> [$chip] 收集固件到 out/$chip/"
@@ -146,14 +163,25 @@ jobs:
             local n; n=$(ls "$GITHUB_WORKSPACE/out/$chip" | wc -l)
             if [[ "$n" -eq 0 ]]; then
               echo ">>> [$chip] ❌ 没有产出任何固件"
-              exit 1
+              return 1
             fi
             echo ">>> [$chip] ✅ 完成，共 $n 个固件"
           }
 
+          # 单平台失败只记录、不中断：继续编译下一个平台，最后汇总
+          FAILED=""
           for chip in $chips_to_build; do
-            build_chip "$chip"
+            if build_chip "$chip"; then
+              echo ">>> [$chip] ✅ 全部完成"
+            else
+              echo ">>> [$chip] ❌ 编译失败（详见上方日志），继续下一个平台"
+              FAILED="$FAILED $chip"
+            fi
           done
+          if [[ -n "$FAILED" ]]; then
+            echo "::warning::以下平台编译失败:$FAILED（其余平台固件照常发布）"
+            echo "$FAILED" > "$GITHUB_WORKSPACE/failed_chips.txt"
+          fi
 
           echo ""
           echo "================= 全部平台编译完成，out 目录汇总 ================="
