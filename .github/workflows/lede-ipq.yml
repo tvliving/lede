@@ -82,7 +82,13 @@ jobs:
           }
 
           want_sel = os.environ.get("GROUPS", "QUALCOMMAX").strip() or "QUALCOMMAX"
-          groups = ALIASES.get(want_sel, [want_sel])
+          # 支持逗号/空格分隔多个组或别名，如 "IPQ53XX,IPQ807X"
+          groups = []
+          for tok in re.split(r"[,\s]+", want_sel):
+              if tok:
+                  groups.extend(ALIASES.get(tok, [tok]))
+          seen = set()
+          groups = [g for g in groups if not (g in seen or seen.add(g))]
           unknown = [g for g in groups if g not in GROUPS_DEF]
           if unknown:
               print("::error::未知芯片组: %s（可选: %s）" % (" ".join(unknown), " ".join(sorted(GROUPS_DEF))))
@@ -463,11 +469,35 @@ jobs:
           set -o pipefail
           nproc
           make -j"$(( $(nproc) + 1 ))" 2>&1 | tee build.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::并行编译失败（静默模式下失败包的报错被吞），用 -j1 V=s 重跑失败包捕获真实错误"
+            # 从 build.log 提取失败包，逐个 V=s 复现（已编译好的包会被跳过，很快到失败点）
+            FAILED=$(grep -oE "ERROR: \S+ failed to build( \(build variant: \S+\))?" build.log | awk '{print $2}' | sort -u || true)
+            if [ -z "$FAILED" ]; then
+              # target/linux 之类没有明确包名的失败，直接对整个树 V=s 复现
+              echo "未提取到失败包名，对全树 -j1 V=s 复现（到失败点即停）"
+              make -j1 V=s 2>&1 | tee error.log || true
+            else
+              for p in $FAILED; do
+                case "$p" in
+                  target/linux|package/*)
+                    echo "===== V=s 复现 $p ====="
+                    make -j1 V=s "$p/compile" 2>&1 | tee -a error.log || true ;;
+                  *)
+                    echo "未知失败目标 $p，跳过 V=s";;
+                esac
+              done
+            fi
+            echo "===== error.log 尾部 150 行（真实错误） ====="
+            tail -n 150 error.log 2>/dev/null || true
+            exit 1
+          fi
 
       - name: 失败诊断
         if: failure()
         run: |
-          for f in prepare.log defconfig.log feeds-update.log feeds-install.log build.log; do
+          for f in prepare.log defconfig.log feeds-update.log feeds-install.log build.log error.log; do
             if [ -f "$f" ]; then
               echo "===== $f （尾部 40 行） ====="
               tail -40 "$f" || true
