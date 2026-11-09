@@ -188,6 +188,20 @@ jobs:
           du -sh "$GITHUB_WORKSPACE"/out/*
           df -hT
 
+      - name: 产物改名（openwrt- → lede-）
+        run: |
+          shopt -s nullglob
+          renamed=0
+          for f in "$GITHUB_WORKSPACE"/out/*/openwrt-*; do
+            d=$(dirname "$f"); b=$(basename "$f")
+            mv -f "$f" "$d/lede-${b#openwrt-}"
+            renamed=$((renamed+1))
+          done
+          for t in "$GITHUB_WORKSPACE"/out/*/sha256sums "$GITHUB_WORKSPACE"/out/*/profiles.json; do
+            [ -f "$t" ] && sed -i -E 's/(^|[[:space:]"*])openwrt-/\1lede-/g' "$t"
+          done
+          echo "已把 $renamed 个产物改名为 lede- 前缀"
+
       - name: 上传到 Release
         working-directory: ${{ github.workspace }}/lede
         env:

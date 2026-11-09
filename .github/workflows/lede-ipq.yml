@@ -551,6 +551,19 @@ jobs:
               SUMMARY_ROWS="$SUMMARY_ROWS|$sub|$dev|${fl:-—}|\n"
             done < "plan/$f"
           done
+
+          # 固件名统一为 lede- 前缀（树内产物默认 openwrt-），并同步校验文件里的文件名
+          shopt -s nullglob
+          renamed=0
+          for f in out/openwrt-*; do
+            mv -f "$f" "out/lede-${f#out/openwrt-}"
+            renamed=$((renamed+1))
+          done
+          for t in out/sha256sums out/profiles.json; do
+            [ -f "$t" ] && sed -i -E 's/(^|[[:space:]"*])openwrt-/\1lede-/g' "$t"
+          done
+          echo "已把 $renamed 个产物改名为 lede- 前缀"
+
           echo "产物文件数: $(ls out | wc -l)，机型: $total，缺失: $miss"
 
           {

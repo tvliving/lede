@@ -5,7 +5,7 @@
 #
 # Copyright (C) 2020 KFERMercer
 #
-name: OpenWrt-CI
+name: Lede-CI
 
 on:
   schedule:
@@ -18,7 +18,7 @@ jobs:
 
   build_openwrt:
 
-    name: Build OpenWrt Firmware
+    name: Build Lede Firmware
 
     runs-on: ubuntu-22.04
 
@@ -39,7 +39,7 @@ jobs:
           sudo -E apt clean
           sudo -E timedatectl set-timezone "Asia/Shanghai"
 
-      - name: Checkout OpenWrt
+      - name: Checkout Lede
         uses: actions/checkout@v4
 
       - name: Free Disk Space (Ubuntu)
@@ -87,21 +87,33 @@ jobs:
           rm -rf $(find ./bin/targets/ -type d -name "packages")
           cp -rf $(find ./bin/packages/ -type f -name "*.ipk") ./artifact/package/
           cp -rf $(find ./bin/targets/ -type f -name "*.buildinfo" -o -name "*.manifest") ./artifact/buildinfo/
+          # 固件名统一为 lede- 前缀（树内产物默认 openwrt-），并同步校验文件里的文件名
+          shopt -s nullglob
+          renamed=0
+          for f in ./bin/targets/*/*/openwrt-*; do
+            d=$(dirname "$f"); b=$(basename "$f")
+            mv -f "$f" "$d/lede-${b#openwrt-}"
+            renamed=$((renamed+1))
+          done
+          for t in ./bin/targets/*/*/sha256sums ./bin/targets/*/*/profiles.json; do
+            [ -f "$t" ] && sed -i -E 's/(^|[[:space:]"*])openwrt-/\1lede-/g' "$t"
+          done
+          echo "已把 $renamed 个产物改名为 lede- 前缀"
 
       - name: Upload buildinfo
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_buildinfo
+          name: Lede_buildinfo
           path: ./artifact/buildinfo/
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_package
+          name: Lede_package
           path: ./artifact/package/
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_firmware
+          name: Lede_firmware
           path: ./bin/targets/

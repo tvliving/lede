@@ -400,6 +400,18 @@ jobs:
                -o -name '*.trx' -o -name '*.tar.gz' -o -name 'sha256sums' \) \
             -exec cp {} out/ \; 2>/dev/null || true
 
+          # 固件名统一为 lede- 前缀（树内产物默认 openwrt-），并同步校验文件里的文件名
+          shopt -s nullglob
+          renamed=0
+          for f in out/openwrt-*; do
+            mv -f "$f" "out/lede-${f#out/openwrt-}"
+            renamed=$((renamed+1))
+          done
+          for t in out/sha256sums out/profiles.json; do
+            [ -f "$t" ] && sed -i -E 's/(^|[[:space:]"*])openwrt-/\1lede-/g' "$t"
+          done
+          echo "已把 $renamed 个产物改名为 lede- 前缀"
+
           if ls out/ 2>/dev/null | grep -qF -- "$DEVICE"; then
             echo "✔ $DEVICE 产物已生成"
           else
