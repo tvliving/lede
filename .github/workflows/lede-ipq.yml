@@ -499,7 +499,13 @@ jobs:
             else
               for p in $FAILED; do
                 case "$p" in
-                  target/linux|package/*)
+                  target/linux)
+                    # 镜像打包阶段（check-size / mkimage / fit）的失败只在 install 时复现
+                    echo "===== V=s 复现 target/linux/install ====="
+                    make -j1 V=s target/linux/install 2>&1 | tee -a error.log || true
+                    echo "===== V=s 复现 target/linux/compile ====="
+                    make -j1 V=s target/linux/compile 2>&1 | tee -a error.log || true ;;
+                  package/*)
                     echo "===== V=s 复现 $p ====="
                     make -j1 V=s "$p/compile" 2>&1 | tee -a error.log || true ;;
                   *)
@@ -507,8 +513,15 @@ jobs:
                 esac
               done
             fi
+            echo "===== 内核 / 镜像尺寸 ====="
+            ls -l build_dir/target-*/linux-*/linux-*/arch/arm64/boot/Image 2>/dev/null || true
+            find bin/targets -type f \( -name '*.itb' -o -name '*sysupgrade.bin' \) 2>/dev/null \
+              | while read -r f; do echo "$(stat -c%s "$f") $f"; done || true
+            echo "===== .config 内核相关 ====="
+            grep -E 'KERNEL_SIZE|CONFIG_KERNEL_(DEBUG_INFO|DEBUG_INFO_BTF|GZIP|XZ|ZSTD|LZ4|LZO)' .config 2>/dev/null || true
             echo "===== error.log 尾部 150 行（真实错误） ====="
             tail -n 150 error.log 2>/dev/null || true
+            cp .config config-snapshot.txt 2>/dev/null || true
             exit 1
           fi
 
@@ -531,7 +544,7 @@ jobs:
           name: build-log-${{ matrix.group }}
           path: |
             *.log
-            .config
+            config-snapshot.txt
           retention-days: 7
           if-no-files-found: warn
 
