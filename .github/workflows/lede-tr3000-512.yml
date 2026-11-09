@@ -395,9 +395,11 @@ jobs:
       - name: 校验产物
         run: |
           mkdir -p out
+          # 多分区 uboot 刷不进 initramfs-kernel.bin，只收集可直接刷 490M ubi 分区的
+          # squashfs-sysupgrade.bin（外加元数据文件）
           find bin/targets/mediatek/filogic -maxdepth 1 -type f \
-            \( -name '*.bin' -o -name '*.itb' -o -name '*.img.gz' -o -name '*.ubi' \
-               -o -name '*.trx' -o -name '*.tar.gz' -o -name 'sha256sums' \) \
+            \( -name '*squashfs-sysupgrade.bin' -o -name 'sha256sums' -o -name 'profiles.json' \
+               -o -name '*.buildinfo' -o -name '*.manifest' \) \
             -exec cp {} out/ \; 2>/dev/null || true
 
           # 固件名统一为 lede- 前缀（树内产物默认 openwrt-），并同步校验文件里的文件名
@@ -412,12 +414,13 @@ jobs:
           done
           echo "已把 $renamed 个产物改名为 lede- 前缀"
 
-          if ls out/ 2>/dev/null | grep -qF -- "$DEVICE"; then
-            echo "✔ $DEVICE 产物已生成"
-          else
-            echo "::error::$DEVICE 没有找到产物"
-            ls -la out/ || true
+          if ! ls out/ 2>/dev/null | grep -qE "tr3000-512mb.*-squashfs-sysupgrade\.bin"; then
+            echo "::error::$DEVICE 没有找到 squashfs-sysupgrade.bin"
+            ls -la out/ bin/targets/mediatek/filogic/ 2>/dev/null || true
             exit 1
+          fi
+          if ls out/ 2>/dev/null | grep -q "initramfs"; then
+            echo "::error::initramfs 镜像不应出现在产物里"; exit 1
           fi
           echo "产物文件数: $(ls out | wc -l)"
 
@@ -480,6 +483,8 @@ jobs:
           - 日志: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
           适用于硬改 512MB Flash 的 Cudy TR3000（128MB 原版请用 cudy_tr3000-v1 固件，刷错会变砖）。
+          本机是多分区 uboot，initramfs-kernel.bin 刷不进，Release 里只放
+          可直接刷 490M ubi 分区的 squashfs-sysupgrade.bin。
           EOF
           gh release create "$TAG" rel/* \
             --title "LEDE TR3000 512MB · $TAG" \
