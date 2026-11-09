@@ -468,8 +468,10 @@ jobs:
         run: |
           set -o pipefail
           nproc
-          make -j"$(( $(nproc) + 1 ))" 2>&1 | tee build.log
-          rc=${PIPESTATUS[0]}
+          # 注意：GitHub Actions 默认以 bash -e 运行，裸管道失败会立刻退出，
+          # 必须用 || rc=... 兜住，否则下面的 V=s 诊断逻辑永远执行不到
+          rc=0
+          make -j"$(( $(nproc) + 1 ))" 2>&1 | tee build.log || rc=${PIPESTATUS[0]}
           if [ "$rc" -ne 0 ]; then
             echo "::warning::并行编译失败（静默模式下失败包的报错被吞），用 -j1 V=s 重跑失败包捕获真实错误"
             # 从 build.log 提取失败包，逐个 V=s 复现（已编译好的包会被跳过，很快到失败点）
