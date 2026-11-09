@@ -331,6 +331,12 @@ jobs:
 
           pkgs = [p for p in os.environ.get("PACKAGES", "").split() if p]
           lines += ["CONFIG_DEVEL=y", "CONFIG_CCACHE=y"]
+          # qualcommbe 的 config-6.18 开了 CONFIG_DEBUG_INFO=y，现代内核会因此
+          # 默认打开 CONFIG_DEBUG_INFO_BTF=y，.BTF 是 alloc 段会直接进 kernel
+          # Image，把 IPQ53xx 的 FIT 撑到 8.1MB 超出 7MiB 分区限制（KERNEL_SIZE）。
+          # 关掉调试信息与 BTF，功能无影响，可把 Image 压回 7MiB 以内。
+          lines += ["# CONFIG_KERNEL_DEBUG_INFO is not set",
+                    "# CONFIG_KERNEL_DEBUG_INFO_BTF is not set"]
           lines += ["CONFIG_PACKAGE_%s=y" % p for p in pkgs]
 
           # 上轮 verify 发现的多余机型（defconfig 自动多开的），本回合显式关掉
@@ -459,6 +465,16 @@ jobs:
             echo "::error::尝试 3 次仍未得到有效 .config"
             exit 1
           fi
+
+          # 内核镜像瘦身校验：DEBUG_INFO/BTF 必须保持关闭，否则 IPQ53xx 的
+          # kernel FIT 会超出 7MiB KERNEL_SIZE，check-size 会直接删掉镜像
+          for s in CONFIG_KERNEL_DEBUG_INFO CONFIG_KERNEL_DEBUG_INFO_BTF; do
+            if grep -qE "^${s}=y$" .config; then
+              echo "::error::${s} 被重新打开，kernel Image 会超出 KERNEL_SIZE"
+              exit 1
+            fi
+          done
+          echo "✔ 内核调试信息/BTF 已关闭（控制 kernel FIT 体积）"
 
       - name: 预下载软件包
         run: |
