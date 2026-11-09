@@ -33,7 +33,7 @@ endef
 
 define Build/gl-be9300-factory
 	$(TOPDIR)/scripts/mkits-qsdk-ipq-image.sh $@.its \
-		$(TOPDIR)/target/linux/qualcommbe/image/gl-be9300-factory.bootscript \
+		bootscript $(TOPDIR)/target/linux/qualcommbe/image/gl-be9300-factory.bootscript \
 		hlos $(IMAGE_KERNEL) rootfs $@
 	PATH=$(LINUX_DIR)/scripts/dtc:$(PATH) mkimage -f $@.its $@.new
 	mv $@.new $@
