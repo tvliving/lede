@@ -2,7 +2,7 @@
 # Build Lede (coolsnowwolf/lede) for ALL MT798x devices (filogic target)
 # 单 job 顺序编译：MT7981 → MT7986 → MT7988，每个平台编完把固件保留到 out/ 目录，最后统一上传
 # 覆盖 lede 源码 filogic.mk 中全部 62 台设备（34 + 21 + 7）
-# 每天 14:00（北京时间）自动编译；手动触发可选平台
+# 每周一、周四 07:00 (北京时间) 自动编译 = UTC 周日/周三 23:00
 # Release 标签 Lede-MT7981-YYYY-MM-DD 等，保留历史，不删除
 #=====================================================================================
 
@@ -10,7 +10,7 @@ name: Build Lede MT798x
 
 on:
   schedule:
-    - cron: '0 6 * * *'   # UTC 06:00 = 北京时间每天 14:00（GitHub 定时可能延迟几分钟）
+    - cron: '0 23 * * 0,3'
   workflow_dispatch:
     inputs:
       chips:
