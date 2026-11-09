@@ -1,0 +1,28 @@
+backport_kernel_connect() declares struct sockaddr_unsized inside its
+parameter list. A tag declared in a parameter list has prototype scope
+and creates a distinct type, which then clashes with the kernel's own
+file-scope struct sockaddr_unsized (in-kernel since 6.18.57) at call
+sites that cast to it (ath12k/qmi.c), failing -Werror builds with
+"incompatible pointer type" on identical type names. This happens even
+though backport-include/linux/socket.h no longer redefines the struct
+on 6.18.57+, because linux/net.h is typically included from within the
+kernel's socket.h before the struct definition is reached.
+
+Forward-declare the tag at file scope before the function so the
+parameter refers to the same type everywhere.
+
+--- a/backport-include/linux/net.h
++++ b/backport-include/linux/net.h
+@@ -7,6 +7,12 @@
+ 
+ #if LINUX_VERSION_IS_LESS(6,19,0)
++/*
++ * Forward-declare the tag at file scope: a tag declared inside the
++ * function's parameter list has prototype scope and creates a distinct
++ * type that clashes with the kernel's own definition (since 6.18.57).
++ */
++struct sockaddr_unsized;
+ /*
+  * The in-kernel socket API takes struct sockaddr_unsized since 6.19.
+  * Older kernels still expect struct sockaddr here.
+  */
