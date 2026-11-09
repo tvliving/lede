@@ -1,9 +1,9 @@
 name: 🌿 LEDE IPQ Build (50xx/53xx/60xx/807x/95xx/806x)
 
-# 每周四 08:00 (北京时间) 自动编译 = UTC 周四 00:00
+# 每周一、周四 07:00 (北京时间) 自动编译 = UTC 周日/周三 23:00
 on:
   schedule:
-    - cron: '0 0 * * 4'
+    - cron: '0 23 * * 0,3'
   workflow_dispatch:
     inputs:
       groups:
