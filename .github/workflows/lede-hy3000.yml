@@ -1,0 +1,173 @@
+#=====================================================================================
+# Build Lede (tvliving/lede) for Philips HY3000 (MT7981B / eMMC)
+#=====================================================================================
+# 单设备独立编译：philips_hy3000（飞利浦 HY3000，MT7981B + MT7531 + 2.5G 光口上行）
+# 设备支持（DTS / filogic.mk / 02_network / platform.sh）已移植进本仓库 master：
+#   - 参考 tvliving/immortalwrt-mt798x-action 的 hy3000（padavanonly openwrt-24.10-6.6 分支）
+#   - 与原版差异：lede 内核 6.18 的 mt7981.dtsi 中 wifi 节点默认 disabled，
+#     且 WiFi 走 mt76（kmod-mt7915e）而非 MTK mt_wifi——
+#     DTS 已显式启用 &wifi 并接 eMMC factory 分区 eeprom(nvmem)，
+#     workflow 同时显式选入全部 WiFi 驱动/固件包，保证 LuCI“网络→无线”菜单正常出现
+# 注意：必须克隆 tvliving/lede（设备支持在 fork 里），不能克隆 coolsnowwolf/lede
+# Release 标签 Lede-HY3000-YYYY-MM-DD，只创建不删除
+#=====================================================================================
+
+name: Build Lede HY3000
+
+on:
+  workflow_dispatch:
+
+env:
+  REPO_URL: https://github.com/tvliving/lede
+  REPO_BRANCH: master
+  TZ: Asia/Shanghai
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      - name: 清理 runner 磁盘空间
+        run: |
+          # 注意：不要删除 /etc/apt/sources.list.d/ —— ubuntu-24.04 的 apt 源就在这里
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          sudo -E apt-get -y purge azure-cli* ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
+          df -hT
+
+      - name: 初始化编译环境
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -y update
+          sudo -E apt-get -y install build-essential clang cmake cpio curl device-tree-compiler ecj fastjar \
+            flex gawk gettext gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool \
+            libelf-dev libglib2.0-dev libgmp-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
+            libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm \
+            lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip \
+            python3-ply python3-docutils python3-pyelftools qemu-utils re2c rsync scons squashfs-tools \
+            subversion swig texinfo unzip vim wget xmlto xxd zlib1g-dev
+          git config --global user.name "GitHub Actions" && git config --global user.email "actions@github.com"
+
+      - name: 克隆 lede 源码并更新 feeds
+        working-directory: ${{ github.workspace }}
+        run: |
+          df -hT $PWD
+          git clone --depth 1 ${REPO_URL} -b ${REPO_BRANCH} lede
+          cd lede
+          echo "================= 最新提交 ================="
+          git log -1 --format="commit: %H  date: %ci"
+          echo "================= 确认 HY3000 设备支持 ================="
+          grep -q "define Device/philips_hy3000" target/linux/mediatek/image/filogic.mk \
+            || { echo "❌ filogic.mk 中没有 philips_hy3000，请确认设备支持已提交"; exit 1; }
+          ls target/linux/mediatek/dts/mt7981b-philips-hy3000.dts
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 生成配置（HY3000 + WiFi 驱动全量选入）
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          {
+            echo "CONFIG_TARGET_mediatek=y"
+            echo "CONFIG_TARGET_mediatek_filogic=y"
+            echo "CONFIG_TARGET_MULTI_PROFILE=y"
+            echo "CONFIG_TARGET_PER_DEVICE_ROOTFS=y"
+            echo "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_philips_hy3000=y"
+            # ---- WiFi 驱动/固件（双保险：DEVICE_PACKAGES 已含，这里再显式选入）----
+            echo "CONFIG_PACKAGE_kmod-mt7915e=y"
+            echo "CONFIG_PACKAGE_kmod-mt7981-firmware=y"
+            echo "CONFIG_PACKAGE_mt7981-wo-firmware=y"
+            echo "CONFIG_PACKAGE_wpad-openssl=y"
+            echo "CONFIG_PACKAGE_wireless-regdb=y"
+            echo "CONFIG_PACKAGE_iwinfo=y"
+            # ---- LuCI 与常用设置 ----
+            echo "CONFIG_PACKAGE_luci=y"
+            echo "CONFIG_PACKAGE_luci-compat=y"
+            echo "CONFIG_PACKAGE_default-settings-chn=y"
+          } > .config
+          make defconfig
+
+          echo ">>> 已选设备："
+          grep "CONFIG_TARGET_DEVICE" .config
+          echo ">>> WiFi 相关包确认："
+          grep -E "CONFIG_PACKAGE_(kmod-mt7915e|kmod-mt7981-firmware|mt7981-wo-firmware|wpad-openssl|wireless-regdb)=" .config
+
+      - name: 下载软件包
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          make download -j$(nproc)
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: 编译
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          echo ">>> 开始编译"
+          if ! make -j$(nproc); then
+            echo ">>> 并行编译失败，改用单线程重试以定位错误"
+            make -j1 V=s || { echo ">>> ❌ 编译失败"; exit 1; }
+          fi
+          echo ">>> 收集固件到 out/"
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          find bin/targets/mediatek/filogic -type f \( -name "*squashfs-sysupgrade*" -o -name "*squashfs-factory*" -o -name "*initramfs*" \) \
+            ! -name "*json*" -exec cp {} "$GITHUB_WORKSPACE/out/" \;
+          ls -lh "$GITHUB_WORKSPACE/out/"
+          n=$(ls "$GITHUB_WORKSPACE/out" | wc -l)
+          [[ "$n" -eq 0 ]] && { echo ">>> ❌ 没有产出任何固件"; exit 1; }
+          echo ">>> ✅ 完成，共 $n 个固件"
+
+      - name: 产物改名（openwrt- → lede-）
+        run: |
+          shopt -s nullglob
+          renamed=0
+          for f in "$GITHUB_WORKSPACE"/out/openwrt-*; do
+            b=$(basename "$f")
+            mv -f "$f" "$GITHUB_WORKSPACE/out/lede-${b#openwrt-}"
+            renamed=$((renamed+1))
+          done
+          echo "已把 $renamed 个产物改名为 lede- 前缀"
+
+      - name: 上传到 Release
+        working-directory: ${{ github.workspace }}/lede
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          dir="$GITHUB_WORKSPACE/out"
+          TAG="Lede-HY3000-$(TZ=Asia/Shanghai date +%Y-%m-%d)"
+          echo ">>> 上传 HY3000 → $TAG（$(ls "$dir" | wc -l) 个文件）"
+
+          {
+            echo "### Lede for Philips HY3000 (MT7981B)"
+            echo "- 源码：[tvliving/lede](${REPO_URL}/tree/${REPO_BRANCH})"
+            echo "- 编译时间：$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S') (UTC+8)"
+            echo "- 默认 IP：192.168.1.1 / 用户名 root / 密码：无"
+            echo "- WiFi：mt76（kmod-mt7915e）+ 2.4G/5G 双频，LuCI 网络→无线可用"
+            echo "### 固件列表"
+            ls "$dir"
+          } > notes.md
+
+          # 只创建、不删除：已存在则复用，历史版本全部保留
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Lede HY3000 ($(TZ=Asia/Shanghai date +%Y-%m-%d))" \
+              --notes-file "notes.md"
+
+          ok=0
+          for i in 1 2 3 4 5; do
+            if gh release upload "$TAG" "$dir"/* --repo "$GITHUB_REPOSITORY" --clobber; then
+              echo ">>> ✅ 上传完成"
+              ok=1
+              break
+            fi
+            echo ">>> ⚠️ 第 $i 次上传失败，10 秒后重试"
+            sleep 10
+          done
+          [[ "$ok" -eq 1 ]] || { echo ">>> ❌ 上传 5 次均失败"; exit 1; }
+          echo ">>> 🎉 全部上传完成"

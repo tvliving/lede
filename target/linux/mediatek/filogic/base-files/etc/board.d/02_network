@@ -53,6 +53,7 @@ mediatek_setup_interfaces()
 	cmcc,a10*|\
 	fzs,5gcpe-p3|\
 	jcg,q30-pro|\
+	philips,hy3000|\
 	qihoo,360t7|\
 	tenbay,wr3000k)
 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" wan
@@ -139,6 +140,11 @@ mediatek_setup_macs()
 		lan_mac=$(mtd_get_mac_ascii u-boot-env mac)
 		wan_mac=$(macaddr_add "$lan_mac" 2)
 		label_mac=$lan_mac
+		;;
+	philips,hy3000)
+		lan_mac=$(mmc_get_mac_binary factory 0x74)
+		wan_mac=$(macaddr_add "$lan_mac" 1)
+		label_mac=$wan_mac
 		;;
 	jdcloud,re-cs-05)
 		wan_mac=$(mmc_get_mac_binary factory 0x24)
