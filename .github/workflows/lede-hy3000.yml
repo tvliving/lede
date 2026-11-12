@@ -69,6 +69,17 @@ jobs:
           ls target/linux/mediatek/dts/mt7981b-philips-hy3000.dts
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+          # ---- 默认主题 vantage：树内已 vendor，兜底再拉一次；同时从 feeds 移除 argon ----
+          if [ ! -f package/luci-theme-vantage/Makefile ]; then
+            git clone -q --depth 1 --filter=blob:none --sparse \
+              https://github.com/kiddin9/op-packages.git /tmp/kiddin9
+            (cd /tmp/kiddin9 && git sparse-checkout set luci-theme-vantage luci-app-vantage)
+            cp -a /tmp/kiddin9/luci-theme-vantage /tmp/kiddin9/luci-app-vantage package/
+          fi
+          test -f package/luci-theme-vantage/Makefile || { echo "::error::vantage 主题包缺失"; exit 1; }
+          echo "✔ vantage 主题包就绪（30_luci-theme-vantage 首启自动设为默认主题）"
+          rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
+          echo "✔ argon 主题已从 feeds 移除"
 
       - name: 生成配置（HY3000 + WiFi 驱动全量选入）
         working-directory: ${{ github.workspace }}/lede
@@ -90,6 +101,10 @@ jobs:
             echo "CONFIG_PACKAGE_luci=y"
             echo "CONFIG_PACKAGE_luci-compat=y"
             echo "CONFIG_PACKAGE_default-settings-chn=y"
+            # ---- 默认主题 vantage；显式关 argon（即使 PACKAGES 传了也不装）----
+            echo "CONFIG_PACKAGE_luci-theme-vantage=y"
+            echo "# CONFIG_PACKAGE_luci-theme-argon is not set"
+            echo "# CONFIG_PACKAGE_luci-app-argon-config is not set"
           } > .config
           make defconfig
 
