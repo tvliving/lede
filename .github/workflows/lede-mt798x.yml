@@ -72,6 +72,18 @@ jobs:
           git log -1 --format="commit: %H  date: %ci"
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+          # ---- 默认主题 vantage：本 workflow 克隆 coolsnowwolf/lede（无树内 vendor），CI 侧拉取 ----
+          # ---- 同时从 feeds 移除 argon 主题 ----
+          if [ ! -f package/luci-theme-vantage/Makefile ]; then
+            git clone -q --depth 1 --filter=blob:none --sparse \
+              https://github.com/kiddin9/op-packages.git /tmp/kiddin9
+            (cd /tmp/kiddin9 && git sparse-checkout set luci-theme-vantage luci-app-vantage)
+            cp -a /tmp/kiddin9/luci-theme-vantage /tmp/kiddin9/luci-app-vantage package/
+          fi
+          test -f package/luci-theme-vantage/Makefile || { echo "::error::vantage 主题包缺失"; exit 1; }
+          echo "✔ vantage 主题包就绪（30_luci-theme-vantage 首启自动设为默认主题）"
+          rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
+          echo "✔ argon 主题已从 feeds 移除"
 
       #===============================================================================
       # 顺序编译：MT7981 → MT7986 → MT7988
@@ -138,6 +150,10 @@ jobs:
               echo "CONFIG_PACKAGE_luci=y"
               echo "CONFIG_PACKAGE_luci-compat=y"
               echo "CONFIG_PACKAGE_default-settings-chn=y"
+              # ---- 默认主题 vantage；显式关 argon ----
+              echo "CONFIG_PACKAGE_luci-theme-vantage=y"
+              echo "# CONFIG_PACKAGE_luci-theme-argon is not set"
+              echo "# CONFIG_PACKAGE_luci-app-argon-config is not set"
             } > .config
             make defconfig
 
