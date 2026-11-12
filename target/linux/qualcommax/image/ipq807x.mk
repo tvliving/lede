@@ -83,14 +83,12 @@ define Device/asus_rt-ax89x
 		sysupgrade-tar kernel=$$$$@ | append-metadata
 ifeq ($(IB),)
 ifneq ($(CONFIG_TARGET_ROOTFS_INITRAMFS),)
-	ARTIFACTS := initramfs-factory.trx initramfs-uImage.itb
+	# initramfs-factory.trx 已移除：6.18 内核 + initramfs 实测 20.13MiB，超过
+	# asusuimage（asus-trx）16MiB 内核上限，该产物无法通过打包校验
+	# （见 lede-ipq run 43149212470 job 130982443249）；initramfs 由 uImage.itb 兜底
+	ARTIFACTS := initramfs-uImage.itb
 	ARTIFACT/initramfs-uImage.itb := \
 		append-image-stage initramfs-kernel.bin | fit gzip $$(KDIR)/image-$$(DEVICE_DTS).dtb
-	ARTIFACT/initramfs-factory.trx := \
-		append-image-stage initramfs-kernel.bin | \
-		asus-fake-rootfs xz /lib/firmware/IPQ8074A/fw_version.txt "fake" -no-compression | \
-		multiImage gzip $$(KDIR)/tmp/fakehsqs $$(KDIR)/image-$$(DEVICE_DTS).dtb | \
-		asus-trx -v 2 -n RT-AX89U -b 388 -e 49000
 endif
 endif
 endef
