@@ -139,6 +139,18 @@ jobs:
             exit 1
           fi
 
+          # ---- 默认主题 vantage：树内已 vendor，兜底再拉一次；同时从 feeds 移除 argon ----
+          if [ ! -f package/luci-theme-vantage/Makefile ]; then
+            git clone -q --depth 1 --filter=blob:none --sparse \
+              https://github.com/kiddin9/op-packages.git /tmp/kiddin9
+            (cd /tmp/kiddin9 && git sparse-checkout set luci-theme-vantage luci-app-vantage)
+            cp -a /tmp/kiddin9/luci-theme-vantage /tmp/kiddin9/luci-app-vantage package/
+          fi
+          test -f package/luci-theme-vantage/Makefile || { echo "::error::vantage 主题包缺失"; exit 1; }
+          echo "✔ vantage 主题包就绪（30_luci-theme-vantage 首启自动设为默认主题）"
+          rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
+          echo "✔ argon 主题已从 feeds 移除"
+
       - name: 生成 .config（单机型 + 自动规避 feeds 的 Kconfig 递归依赖）
         env:
           TARGET: mediatek
@@ -212,6 +224,10 @@ jobs:
           pkgs = [p for p in os.environ.get("PACKAGES", "").split() if p]
           lines += ["CONFIG_DEVEL=y", "CONFIG_CCACHE=y"]
           lines += ["CONFIG_PACKAGE_%s=y" % p for p in pkgs]
+          # 默认主题 vantage；显式关 argon（后写优先，即使 PACKAGES 传了 argon 也不会装）
+          lines += ["CONFIG_PACKAGE_luci-theme-vantage=y",
+                    "# CONFIG_PACKAGE_luci-theme-argon is not set",
+                    "# CONFIG_PACKAGE_luci-app-argon-config is not set"]
 
           # 上轮 verify 发现的多余机型（defconfig 自动多开的），本回合显式关掉
           if os.path.exists("fix.txt"):
@@ -250,7 +266,7 @@ jobs:
               open("fix.txt", "w").write("\n".join(fix) + "\n")
               print("发现 %d 个多开机型，已写入 fix.txt 待显式关闭" % len(fix))
               rc = 2 if rc == 0 else rc
-          for p in ("luci", "luci-compat", "luci-i18n-base-zh-cn"):
+          for p in ("luci", "luci-compat", "luci-i18n-base-zh-cn", "luci-theme-vantage"):
               flag = "CONFIG_PACKAGE_%s=y" % p
               print(("OK   " if flag in cfg else "WARN ") + flag)
           sys.exit(rc)
