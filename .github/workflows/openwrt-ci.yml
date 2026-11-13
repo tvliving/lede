@@ -62,6 +62,72 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+      - name: 安装 iStore 软件中心与首页包（树内 vendor）
+        run: |
+          git clone -q --depth 1 --filter=blob:none --sparse \
+            https://github.com/kiddin9/op-packages.git /tmp/kiddin9-store
+          (cd /tmp/kiddin9-store && git sparse-checkout set luci-app-store luci-app-quickstart quickstart taskd luci-lib-taskd luci-lib-xterm)
+          cp -a /tmp/kiddin9-store/luci-app-store /tmp/kiddin9-store/luci-app-quickstart \
+                /tmp/kiddin9-store/quickstart /tmp/kiddin9-store/taskd \
+                /tmp/kiddin9-store/luci-lib-taskd /tmp/kiddin9-store/luci-lib-xterm package/
+          for p in luci-app-store luci-app-quickstart quickstart taskd luci-lib-taskd luci-lib-xterm; do
+            test -f "package/$p/Makefile" || { echo "::error::iStore 包缺失: $p"; exit 1; }
+          done
+          echo "✔ iStore 软件中心(luci-app-store) + 首页(luci-app-quickstart) 包就绪"
+
+      #===============================================================================
+      # 闪存验证（与 tvliving/Kwrt 同一套判定）：仅给 ≥128M 闪存（或 eMMC/SD 启动）
+      # 的机型注入 iStore；rootfs 分区装不下 iStore(~15MB) 的机型保持原样编译。
+      #===============================================================================
+      - name: 闪存验证并注入 iStore（仅 ≥128M 闪存机型）
+        run: |
+          python3 - <<'PYEOF'
+          import re, sys
+          # 排除：闪存 <128M 或 rootfs 分区装不下 iStore 的机型（实测/官方 dts 判定）
+          EXCLUDE = {
+            'cetron_ct3003':                  'ubi 32M',
+            'cmcc_a10':                       'ubi 64M（a10-mod 才是 256M 版）',
+            'cudy_tr3000-v1':                 'ubi 64M（256mb/mod 版本已单独列出）',
+            'h3c_magic-nx30-pro':             '128M flash 但 rootfs 分区 64M',
+            'nokia_ea0326gmp':                'ubi 86M',
+            'tenbay_wr3000k':                 'ubi 48M x2（双系统分区）',
+            'mediatek_mt7986a-rfb':           'IMAGE_SIZE 64M',
+            'mediatek_mt7986b-rfb':           'IMAGE_SIZE 64M',
+            'ruijie_rg-x60-pro':              'ubi 63M',
+            'xiaomi_redmi-router-ax6000-stock':'原厂分区布局 ubi 80M',
+          }
+          INCLUDE = """airpi_ap3000m abt_asr3000 cetron_ct3003-mod cmcc_a10-mod cmcc_rax3000m-emmc
+            cmcc_rax3000m-nand cmcc_rax3000me-emmc cmcc_rax3000me-nand cmcc_xr30-emmc cmcc_xr30-nand
+            cudy_tr3000-256mb-v1 cudy_tr3000-mod fzs_5gcpe-p3 glinet_gl-mt2500 glinet_gl-mt3000
+            glinet_gl-x3000 glinet_gl-xe3000 huasifei_wh3000-emmc huasifei_wh3000-pro huasifei_ws3006
+            huasifei_ws3009 imou_lc-hx3001 jcg_q30-pro konka_komi-a31 openembed_som7981 qihoo_360t7
+            xiaomi_mi-router-ax3000t xiaomi_mi-router-wr30u
+            asus_tuf-ax4200 asus_tuf-ax6000 bananapi_bpi-r3 bananapi_bpi-r3-mini-emmc bananapi_bpi-r3-mini-nand
+            clx_s20l glinet_gl-mt6000 hf_m7986r1-emmc hf_m7986r1-nand jdcloud_re-cs-05 netcore_n60
+            netcore_n60-pro tplink_tl-xdr4288 tplink_tl-xdr6086 tplink_tl-xdr6088 tplink_tl-xtr8488
+            xiaomi_redmi-router-ax6000
+            bananapi_bpi-r4 bananapi_bpi-r4-poe bananapi_bpi-r4-lite glinet_gl-mt3600be mediatek_mt7988a-rfb
+            tenda_be12-pro tplink_tl-7dr7299-v1""".split()
+          path = 'target/linux/mediatek/image/filogic.mk'
+          s = open(path, encoding='utf-8').read()
+          miss, done = [], []
+          for d in INCLUDE:
+              if d in EXCLUDE:
+                  continue
+              m = re.search(r'(define Device/%s\n.*?\n)(\s*endef)' % re.escape(d), s, re.S)
+              if not m:
+                  miss.append(d); continue
+              if 'luci-app-store' in m.group(1):
+                  done.append(d); continue
+              s = s[:m.start(2)] + '  DEVICE_PACKAGES += luci-app-store luci-app-quickstart\n' + s[m.start(2):]
+              done.append(d)
+          open(path, 'w', encoding='utf-8', newline='\n').write(s)
+          if miss:
+              print('::error::filogic.mk 中找不到这些机型（命名变更？）: %s' % ' '.join(miss)); sys.exit(1)
+          print('已注入 %d 台 ≥128M 机型' % len(done))
+          print('已排除（<128M 或 rootfs 装不下）:', ' '.join(sorted(EXCLUDE)))
+          PYEOF
+
       - name: Generate configuration file
         run: make defconfig
 
