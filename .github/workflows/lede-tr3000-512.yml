@@ -151,13 +151,27 @@ jobs:
           rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
           echo "✔ argon 主题已从 feeds 移除"
 
+      # TR3000 512MB 为 512M NAND（≥128M），整机安装 iStore 软件中心 + 首页
+      - name: 安装 iStore 软件中心与首页包（树内 vendor）
+        run: |
+          git clone -q --depth 1 --filter=blob:none --sparse \
+            https://github.com/kiddin9/op-packages.git /tmp/kiddin9-store
+          (cd /tmp/kiddin9-store && git sparse-checkout set luci-app-store luci-app-quickstart quickstart taskd luci-lib-taskd luci-lib-xterm)
+          cp -a /tmp/kiddin9-store/luci-app-store /tmp/kiddin9-store/luci-app-quickstart \
+                /tmp/kiddin9-store/quickstart /tmp/kiddin9-store/taskd \
+                /tmp/kiddin9-store/luci-lib-taskd /tmp/kiddin9-store/luci-lib-xterm package/
+          for p in luci-app-store luci-app-quickstart quickstart taskd luci-lib-taskd luci-lib-xterm; do
+            test -f "package/$p/Makefile" || { echo "::error::iStore 包缺失: $p"; exit 1; }
+          done
+          echo "✔ iStore 软件中心(luci-app-store) + 首页(luci-app-quickstart) 包就绪"
+
       - name: 生成 .config（单机型 + 自动规避 feeds 的 Kconfig 递归依赖）
         env:
           TARGET: mediatek
           SUBS: '["filogic"]'
           FILES: '["device.txt"]'
           DEVICE: cudy_tr3000-512mb-v1
-          PACKAGES: ${{ inputs.packages || 'luci luci-compat luci-i18n-base-zh-cn' }}
+          PACKAGES: ${{ inputs.packages || 'luci luci-compat luci-i18n-base-zh-cn luci-app-store luci-app-quickstart' }}
           PROTECTED: luci luci-base luci-compat base-files
         run: |
           mkdir -p plan tmp
