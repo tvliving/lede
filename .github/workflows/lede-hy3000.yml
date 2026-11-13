@@ -16,6 +16,13 @@ name: Build Lede HY3000
 
 on:
   workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/lede-hy3000.yml'
+      - 'target/linux/mediatek/dts/mt7981b-philips-hy3000.dts'
+      - 'target/linux/mediatek/image/filogic.mk'
+      - 'target/linux/mediatek/filogic/base-files/**'
 
 env:
   REPO_URL: https://github.com/tvliving/lede
