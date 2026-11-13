@@ -226,6 +226,84 @@ jobs:
           name: device-plan
           path: plan
 
+      # IPQ806X 为 32 位 armv7，luci-app-store 仅支持 x86_64/aarch64，整组不装 iStore
+      - name: 安装 iStore 软件中心与首页包（树内 vendor）
+        if: matrix.group != 'IPQ806X'
+        run: |
+          git clone -q --depth 1 --filter=blob:none --sparse \
+            https://github.com/kiddin9/op-packages.git /tmp/kiddin9-store
+          (cd /tmp/kiddin9-store && git sparse-checkout set luci-app-store luci-app-quickstart quickstart taskd luci-lib-taskd luci-lib-xterm)
+          cp -a /tmp/kiddin9-store/luci-app-store /tmp/kiddin9-store/luci-app-quickstart \
+                /tmp/kiddin9-store/quickstart /tmp/kiddin9-store/taskd \
+                /tmp/kiddin9-store/luci-lib-taskd /tmp/kiddin9-store/luci-lib-xterm package/
+          for p in luci-app-store luci-app-quickstart quickstart taskd luci-lib-taskd luci-lib-xterm; do
+            test -f "package/$p/Makefile" || { echo "::error::iStore 包缺失: $p"; exit 1; }
+          done
+          echo "✔ iStore 软件中心(luci-app-store) + 首页(luci-app-quickstart) 包就绪"
+
+      #===============================================================================
+      # 闪存验证（与 tvliving/Kwrt 同一套判定）：仅给 ≥128M 闪存（或 eMMC/SD 启动）
+      # 的机型注入 iStore；rootfs 分区装不下 iStore(~15MB) 的机型保持原样编译。
+      #===============================================================================
+      - name: 闪存验证并注入 iStore（仅 ≥128M 闪存机型）
+        if: matrix.group != 'IPQ806X'
+        env:
+          TARGET: ${{ matrix.target }}
+          SUBS: ${{ matrix.subs }}
+          FILES: ${{ matrix.files }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, re, sys
+          target = os.environ['TARGET']
+          subs = json.loads(os.environ['SUBS'])
+          files = json.loads(os.environ['FILES'])
+          # 排除：闪存 <128M 或 rootfs 分区装不下 iStore 的机型（实测/官方 dts 判定）
+          EXCLUDE = {
+            'ipq807x': {
+              'compex_wpq873':   'NOR 52M x2 双镜像',
+              'edgecore_eap102': 'NOR 52M x2 双镜像',
+              'zbtlink_zbt-z800ax': 'NOR 52M x2 双镜像',
+              'edimax_cax1800':  'rootfs 52M',
+              'prpl_haze':       'NOR 单分区，无法验证 ≥128M',
+            },
+            'ipq60xx': {
+              '8devices_mango-dvk': 'NOR 32M（lede 树内无此机型，防上游同步）',
+              'anysafe_e1':         'NOR ~8M',
+            },
+            'ipq95xx': {
+              'qcom_rdp433':       'NOR 24M',
+              '8devices_kiwi-dvk': 'NOR 单分区，无法验证 ≥128M',
+            },
+          }
+          total = 0
+          for sub, fname in zip(subs, files):
+              mk = 'target/linux/%s/image/%s.mk' % (target, sub)
+              devs = [l.strip() for l in open('plan/' + fname, encoding='utf-8')
+                      if l.strip() and not l.startswith('#')]
+              ex = EXCLUDE.get(sub, {})
+              s = open(mk, encoding='utf-8').read()
+              miss, done = [], []
+              for d in devs:
+                  if d in ex:
+                      continue
+                  m = re.search(r'(define Device/%s\n.*?\n)(\s*endef)' % re.escape(d), s, re.S)
+                  if not m:
+                      miss.append(d); continue
+                  if 'luci-app-store' in m.group(1):
+                      done.append(d); continue
+                  s = s[:m.start(2)] + '  DEVICE_PACKAGES += luci-app-store luci-app-quickstart\n' + s[m.start(2):]
+                  done.append(d)
+              open(mk, 'w', encoding='utf-8', newline='\n').write(s)
+              if miss:
+                  print('::error::%s 中找不到机型: %s' % (mk, ' '.join(miss))); sys.exit(1)
+              skipped = [d for d in devs if d in ex]
+              print('%s: 注入 %d 台，排除 %d 台' % (mk, len(done), len(skipped)))
+              if skipped:
+                  print('  排除:', ' '.join('%s(%s)' % (d, ex[d]) for d in skipped))
+              total += len(done)
+          print('共为 %d 台 ≥128M 机型注入 iStore 软件中心+首页' % total)
+          PYEOF
+
       - name: 恢复 ccache
         uses: actions/cache@v4
         with:
