@@ -131,6 +131,40 @@ jobs:
           echo ">>> WiFi 相关包确认："
           grep -E "CONFIG_PACKAGE_(kmod-mt7915e|kmod-mt7981-firmware|mt7981-wo-firmware|wpad-openssl|wireless-regdb)=" .config
 
+      - name: 预置 erofs-utils 源码包（git.kernel.org 在 runner 不可达）
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          set -e
+          # tools/erofs-utils 的 PKG_SOURCE_URL 指向 git.kernel.org snapshot，
+          # 该域名在 GitHub runner 上连接超时；openwrt 各镜像站也没有这个文件（404）。
+          # GitHub 的 tag 归档与 kernel.org snapshot 内容完全一致（sha256 相同），
+          # 这里预先把 tarball 放进 dl/，make download 校验通过后即跳过下载。
+          v=$(sed -n 's/^PKG_VERSION:=//p' tools/erofs-utils/Makefile | head -1)
+          want=$(sed -n 's/^PKG_HASH:=//p' tools/erofs-utils/Makefile | head -1)
+          f="dl/erofs-utils-${v}.tar.gz"
+          mkdir -p dl
+          if [ -s "$f" ] && [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$want" ]; then
+            echo "✔ $f 已存在且校验通过，跳过"
+            exit 0
+          fi
+          url="https://github.com/erofs/erofs-utils/archive/refs/tags/v${v}.tar.gz"
+          echo ">>> 下载 $url"
+          ok=0
+          for i in 1 2 3; do
+            if curl -fsSL --connect-timeout 20 --retry 3 -o "$f.tmp" "$url"; then ok=1; break; fi
+            echo ">>> 第 $i 次下载失败，5 秒后重试"
+            sleep 5
+          done
+          [ "$ok" = 1 ] || { echo "::error::erofs-utils 源码包下载失败"; exit 1; }
+          got=$(sha256sum "$f.tmp" | cut -d' ' -f1)
+          if [ "$got" != "$want" ]; then
+            echo "::error::erofs-utils sha256 不匹配 got=$got want=$want"
+            rm -f "$f.tmp"
+            exit 1
+          fi
+          mv -f "$f.tmp" "$f"
+          echo "✔ 已预置 $f（sha256 校验通过）"
+
       - name: 下载软件包
         working-directory: ${{ github.workspace }}/lede
         run: |
