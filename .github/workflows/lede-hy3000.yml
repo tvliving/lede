@@ -16,13 +16,6 @@ name: Build Lede HY3000
 
 on:
   workflow_dispatch:
-  push:
-    branches: [master]
-    paths:
-      - '.github/workflows/lede-hy3000.yml'
-      - 'target/linux/mediatek/dts/mt7981b-philips-hy3000.dts'
-      - 'target/linux/mediatek/image/filogic.mk'
-      - 'target/linux/mediatek/filogic/base-files/**'
 
 env:
   REPO_URL: https://github.com/tvliving/lede
@@ -88,6 +81,21 @@ jobs:
           rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
           echo "✔ argon 主题已从 feeds 移除"
 
+      # HY3000 为 eMMC 启动（≥128M），整机安装 iStore 软件中心 + 首页
+      - name: 安装 iStore 软件中心与首页包（树内 vendor）
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          git clone -q --depth 1 --filter=blob:none --sparse \
+            https://github.com/kiddin9/op-packages.git /tmp/kiddin9-store
+          (cd /tmp/kiddin9-store && git sparse-checkout set luci-app-store luci-app-quickstart quickstart taskd luci-lib-taskd luci-lib-xterm)
+          cp -a /tmp/kiddin9-store/luci-app-store /tmp/kiddin9-store/luci-app-quickstart \
+                /tmp/kiddin9-store/quickstart /tmp/kiddin9-store/taskd \
+                /tmp/kiddin9-store/luci-lib-taskd /tmp/kiddin9-store/luci-lib-xterm package/
+          for p in luci-app-store luci-app-quickstart quickstart taskd luci-lib-taskd luci-lib-xterm; do
+            test -f "package/$p/Makefile" || { echo "::error::iStore 包缺失: $p"; exit 1; }
+          done
+          echo "✔ iStore 软件中心(luci-app-store) + 首页(luci-app-quickstart) 包就绪"
+
       - name: 生成配置（HY3000 + WiFi 驱动全量选入）
         working-directory: ${{ github.workspace }}/lede
         run: |
@@ -108,6 +116,9 @@ jobs:
             echo "CONFIG_PACKAGE_luci=y"
             echo "CONFIG_PACKAGE_luci-compat=y"
             echo "CONFIG_PACKAGE_default-settings-chn=y"
+            # ---- iStore 软件中心 + 首页（eMMC ≥128M，全量安装）----
+            echo "CONFIG_PACKAGE_luci-app-store=y"
+            echo "CONFIG_PACKAGE_luci-app-quickstart=y"
             # ---- 默认主题 vantage；显式关 argon（即使 PACKAGES 传了也不装）----
             echo "CONFIG_PACKAGE_luci-theme-vantage=y"
             echo "# CONFIG_PACKAGE_luci-theme-argon is not set"
