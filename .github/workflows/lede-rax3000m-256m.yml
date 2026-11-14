@@ -71,11 +71,13 @@ jobs:
           echo "================= 最新提交 ================="
           git log -1 --format="commit: %H  date: %ci"
           echo "================= 确认机型支持 ================="
-          for d in cmcc_rax3000m-nand cmcc_xr30-nand; do
+          for pair in cmcc_rax3000m-nand:mt7981b-cmcc-rax3000m-nand \
+                      cmcc_xr30-nand:mt7981b-cmcc-xr30-nand; do
+            d=${pair%%:*}; f=${pair##*:}
             grep -q "define Device/${d}\$" target/linux/mediatek/image/filogic.mk \
               || { echo "❌ filogic.mk 中没有 ${d}，请确认设备支持已提交"; exit 1; }
-            test -f "target/linux/mediatek/dts/mt7981b-${d}.dts" \
-              || { echo "❌ 缺少 DTS: mt7981b-${d}.dts"; exit 1; }
+            test -f "target/linux/mediatek/dts/${f}.dts" \
+              || { echo "❌ 缺少 DTS: ${f}.dts"; exit 1; }
           done
           echo "✔ RAX3000M / XR30 NAND 机型支持已就位"
           ./scripts/feeds update -a
