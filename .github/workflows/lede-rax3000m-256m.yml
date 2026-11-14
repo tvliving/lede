@@ -19,6 +19,10 @@ name: Build Lede RAX3000M / XR30 (NAND 256M)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/lede-rax3000m-256m.yml'
 
 env:
   REPO_URL: https://github.com/tvliving/lede
