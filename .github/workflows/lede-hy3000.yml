@@ -115,7 +115,15 @@ jobs:
             # ---- LuCI 与常用设置 ----
             echo "CONFIG_PACKAGE_luci=y"
             echo "CONFIG_PACKAGE_luci-compat=y"
-            echo "CONFIG_PACKAGE_default-settings-chn=y"
+            # default-settings 已在 include/target.mk 的 DEFAULT_PACKAGES 里，
+            # 原来写的 default-settings-chn 是个不存在的符号（会被 kconfig 静默忽略）
+            echo "CONFIG_PACKAGE_default-settings=y"
+            # ---- 简体中文语言包 ----
+            # LUCI_LANG_zh_Hans 让 luci-i18n-*-zh-cn 的 DEFAULT 变为 y；
+            # 再显式点名 base，避免上游 DEFAULT 机制变动后界面只剩英文
+            echo "CONFIG_LUCI_LANG_zh_Hans=y"
+            echo "CONFIG_LUCI_LANG_en=y"
+            echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
             # ---- iStore 软件中心 + 首页（eMMC ≥128M，全量安装）----
             echo "CONFIG_PACKAGE_luci-app-store=y"
             echo "CONFIG_PACKAGE_luci-app-quickstart=y"
@@ -125,6 +133,20 @@ jobs:
             echo "# CONFIG_PACKAGE_luci-app-argon-config is not set"
           } > .config
           make defconfig
+
+          # 全量简体中文语言包：把这次构建里所有存在的 luci-i18n-*-zh-cn 显式选入
+          awk '/^config PACKAGE_luci-i18n-.+-zh-cn$/{print $2"=y"}' tmp/.config-package.in >> .config
+          make defconfig
+
+          # iStore / 中文包断言：这两个都曾因符号写错被 kconfig 静默忽略，
+          # 构建全绿但刷进去没有商店、没有中文，必须在这里卡住
+          for s in luci-app-store luci-app-quickstart luci-i18n-base-zh-cn; do
+            grep -qE "^CONFIG_PACKAGE_${s}=y$" .config \
+              || { echo "::error::${s} 未生效（iStore 或中文包会缺失）"; exit 1; }
+          done
+          n=$(grep -cE '^CONFIG_PACKAGE_luci-i18n-.+-zh-cn=y$' .config || true)
+          [ "$n" -ge 5 ] || { echo "::error::简体中文语言包数量异常：$n"; exit 1; }
+          echo "✔ 简体中文语言包 $n 个，iStore 已选入"
 
           echo ">>> 已选设备："
           grep "CONFIG_TARGET_DEVICE" .config

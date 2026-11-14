@@ -218,7 +218,9 @@ jobs:
               done
               echo "CONFIG_PACKAGE_luci=y"
               echo "CONFIG_PACKAGE_luci-compat=y"
-              echo "CONFIG_PACKAGE_default-settings-chn=y"
+              # default-settings 已在 include/target.mk 的 DEFAULT_PACKAGES 中；
+              # 原先写的 default-settings-chn 是不存在的符号，会被 kconfig 静默忽略
+              echo "CONFIG_PACKAGE_default-settings=y"
               # ---- 默认主题 vantage；显式关 argon ----
               echo "CONFIG_PACKAGE_luci-theme-vantage=y"
               echo "# CONFIG_PACKAGE_luci-theme-argon is not set"
