@@ -227,6 +227,13 @@ jobs:
               echo "# CONFIG_PACKAGE_luci-app-argon-config is not set"
             } > .config
             make defconfig
+            # 简体中文语言包：全量枚举选入（kconfig 只保留 app 已选中的那些）
+            awk '/^config PACKAGE_luci-i18n-.+-zh-cn$/{print $2"=y"}' tmp/.config-package.in >> .config
+            echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
+            echo "CONFIG_LUCI_LANG_zh_Hans=y" >> .config
+            make defconfig
+            grep -qE '^CONFIG_PACKAGE_luci-i18n-base-zh-cn=y$' .config \
+              || { echo "::error::[$chip] 简体中文语言包未生效"; return 1; }
 
             echo ">>> [$chip] 已选设备："
             grep "CONFIG_TARGET_DEVICE" .config | sed 's/CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_//;s/=y//' | tr '\n' ' '

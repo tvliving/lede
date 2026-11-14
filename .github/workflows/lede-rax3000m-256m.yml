@@ -1,0 +1,325 @@
+#=====================================================================================
+# Build Lede (tvliving/lede) for CMCC RAX3000M / XR30（NAND 硬改 256M Flash）
+#=====================================================================================
+# 分区方案移植自 ReddotCleaner/rax3000m-256m-cloud-build：
+#   ubi 分区由 114MB（0x7200000）扩到 250.5MB（0xFA80000），
+#   其余沿用 lede 树内已有的 cmcc_rax3000m-nand / cmcc_xr30-nand 支持
+#   （KERNEL_IN_UBI + sysupgrade-tar，沿用机器现有 256M U-Boot，不刷 preloader/fip）。
+#
+# RAX3000M 与 XR30 硬件同源（MT7981B + MT7531，3 LAN + 1 WAN，SPI-NAND），
+# 分区表 / MAC 偏移(factory 0x24/0x2a) / WiFi eeprom(factory 0x0) 完全一致。
+#
+# 首页 / iStore / 中文：与 lede-hy3000.yml 同一套（树内 vendor kidsin9 的
+#   luci-app-store + luci-app-quickstart + taskd 依赖链 + 全量 zh-cn 语言包）
+# WiFi：mt76（kmod-mt7915e，filogic target 的 DEFAULT_PACKAGES）+ dts 里的
+#   mediatek,mtd-eeprom = <&factory 0x0> 校准数据
+#=====================================================================================
+
+name: Build Lede RAX3000M / XR30 (NAND 256M)
+
+on:
+  workflow_dispatch:
+
+env:
+  REPO_URL: https://github.com/tvliving/lede
+  REPO_BRANCH: master
+  TZ: Asia/Shanghai
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      - name: 清理 runner 磁盘空间
+        run: |
+          # 注意：不要删除 /etc/apt/sources.list.d/ —— ubuntu-24.04 的 apt 源就在这里
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          sudo -E apt-get -y purge azure-cli* ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get -y clean
+          df -hT
+
+      - name: 初始化编译环境
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -y update
+          sudo -E apt-get -y install build-essential clang cmake cpio curl device-tree-compiler ecj fastjar \
+            flex gawk gettext gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool \
+            libelf-dev libglib2.0-dev libgmp-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
+            libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm \
+            lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip \
+            python3-ply python3-docutils python3-pyelftools qemu-utils re2c rsync scons squashfs-tools \
+            subversion swig texinfo unzip vim wget xmlto xxd zlib1g-dev
+          git config --global user.name "GitHub Actions" && git config --global user.email "actions@github.com"
+
+      - name: 克隆 lede 源码并更新 feeds
+        working-directory: ${{ github.workspace }}
+        run: |
+          df -hT $PWD
+          git clone --depth 1 ${REPO_URL} -b ${REPO_BRANCH} lede
+          cd lede
+          echo "================= 最新提交 ================="
+          git log -1 --format="commit: %H  date: %ci"
+          echo "================= 确认机型支持 ================="
+          for d in cmcc_rax3000m-nand cmcc_xr30-nand; do
+            grep -q "define Device/${d}\$" target/linux/mediatek/image/filogic.mk \
+              || { echo "❌ filogic.mk 中没有 ${d}，请确认设备支持已提交"; exit 1; }
+            test -f "target/linux/mediatek/dts/mt7981b-${d}.dts" \
+              || { echo "❌ 缺少 DTS: mt7981b-${d}.dts"; exit 1; }
+          done
+          echo "✔ RAX3000M / XR30 NAND 机型支持已就位"
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          # ---- 默认主题 vantage：树内已 vendor，兜底再拉一次；同时从 feeds 移除 argon ----
+          if [ ! -f package/luci-theme-vantage/Makefile ]; then
+            git clone -q --depth 1 --filter=blob:none --sparse \
+              https://github.com/kiddin9/op-packages.git /tmp/kiddin9
+            (cd /tmp/kiddin9 && git sparse-checkout set luci-theme-vantage luci-app-vantage)
+            cp -a /tmp/kiddin9/luci-theme-vantage /tmp/kiddin9/luci-app-vantage package/
+          fi
+          test -f package/luci-theme-vantage/Makefile || { echo "::error::vantage 主题包缺失"; exit 1; }
+          rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
+          echo "✔ vantage 主题包就绪，argon 已移除"
+
+      # 256M 闪存 ≫ 128M，整机安装 iStore 软件中心 + 首页
+      - name: 安装 iStore 软件中心与首页包（树内 vendor）
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          git clone -q --depth 1 --filter=blob:none --sparse \
+            https://github.com/kiddin9/op-packages.git /tmp/kiddin9-store
+          (cd /tmp/kiddin9-store && git sparse-checkout set luci-app-store luci-app-quickstart quickstart taskd luci-lib-taskd luci-lib-xterm)
+          cp -a /tmp/kiddin9-store/luci-app-store /tmp/kiddin9-store/luci-app-quickstart \
+                /tmp/kiddin9-store/quickstart /tmp/kiddin9-store/taskd \
+                /tmp/kiddin9-store/luci-lib-taskd /tmp/kiddin9-store/luci-lib-xterm package/
+          for p in luci-app-store luci-app-quickstart quickstart taskd luci-lib-taskd luci-lib-xterm; do
+            test -f "package/$p/Makefile" || { echo "::error::iStore 包缺失: $p"; exit 1; }
+          done
+          echo "✔ iStore 软件中心(luci-app-store) + 首页(luci-app-quickstart) 包就绪"
+
+      - name: 扩分区到 256M（dts + filogic.mk IMAGE_SIZE）
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          python3 - <<'PYEOF'
+          import io, re
+
+          def load(p):
+              return io.open(p, encoding='utf-8', newline='').read()
+
+          def save(p, s):
+              io.open(p, 'w', encoding='utf-8', newline='').write(s)
+
+          OLD = 'reg = <0x580000 0x7200000>;'   # 原厂 128M：ubi 114MB
+          NEW = 'reg = <0x580000 0xFA80000>;'   # 硬改 256M：0x10000000 - 0x580000 = 250.5MB
+
+          # ---- 1) DTS：两台机型的 ubi 分区扩到 250.5MB ----
+          for dev in ('cmcc-rax3000m-nand', 'cmcc-xr30-nand'):
+              p = 'target/linux/mediatek/dts/mt7981b-%s.dts' % dev
+              s = load(p)
+              if NEW not in s:
+                  assert s.count(OLD) == 1, '%s 的 ubi 分区锚点异常: %d' % (dev, s.count(OLD))
+                  save(p, s.replace(OLD, NEW))
+              s = load(p)
+              assert NEW in s, '%s ubi 分区替换失败' % dev
+              print('✔ %s: ubi 分区已扩为 250.5MB' % dev)
+
+          # ---- 2) filogic.mk：IMAGE_SIZE 116736k -> 250880k（245MB < 250.5MB）----
+          p = 'target/linux/mediatek/image/filogic.mk'
+          s = load(p)
+          for dev in ('cmcc_rax3000m-nand', 'cmcc_xr30-nand'):
+              m = re.search(r'define Device/%s\n(.*?)\nendef' % re.escape(dev), s, re.S)
+              assert m, 'filogic.mk 中找不到 %s 设备块' % dev
+              block = m.group(1)
+              if 'IMAGE_SIZE := 250880k' not in block:
+                  assert 'IMAGE_SIZE := 116736k' in block, '%s 的 IMAGE_SIZE 锚点异常' % dev
+                  block2 = block.replace('IMAGE_SIZE := 116736k', 'IMAGE_SIZE := 250880k')
+                  s = s[:m.start(1)] + block2 + s[m.end(1):]
+                  print('✔ %s: IMAGE_SIZE -> 250880k' % dev)
+          save(p, s)
+          s = load(p)
+          assert s.count('IMAGE_SIZE := 250880k') >= 2, 'IMAGE_SIZE 未全部改到位'
+          print('✔ filogic.mk 校验通过')
+          PYEOF
+
+          echo "===== 校验 DTS / IMAGE_SIZE ====="
+          grep -n "reg = <0x580000" target/linux/mediatek/dts/mt7981b-cmcc-rax3000m-nand.dts \
+                                            target/linux/mediatek/dts/mt7981b-cmcc-xr30-nand.dts
+          grep -n "IMAGE_SIZE" target/linux/mediatek/image/filogic.mk | grep 250880k
+          # WiFi eeprom 必须挂在 wifi 节点上，否则 mt76 起不来
+          for dev in cmcc-rax3000m-nand cmcc-xr30-nand; do
+            grep -q 'mediatek,mtd-eeprom = <&factory 0x0>;' "target/linux/mediatek/dts/mt7981b-${dev}.dts" \
+              || { echo "::error::${dev} 缺 WiFi eeprom，开机没有 WiFi"; exit 1; }
+          done
+
+      - name: 生成配置（RAX3000M / XR30 256M + WiFi 驱动全量选入）
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          {
+            echo "CONFIG_TARGET_mediatek=y"
+            echo "CONFIG_TARGET_mediatek_filogic=y"
+            echo "CONFIG_TARGET_MULTI_PROFILE=y"
+            echo "CONFIG_TARGET_PER_DEVICE_ROOTFS=y"
+            echo "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_cmcc_rax3000m-nand=y"
+            echo "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_cmcc_xr30-nand=y"
+            # ---- WiFi 驱动/固件 ----
+            echo "CONFIG_PACKAGE_kmod-mt7915e=y"
+            echo "CONFIG_PACKAGE_kmod-mt7981-firmware=y"
+            echo "CONFIG_PACKAGE_mt7981-wo-firmware=y"
+            echo "CONFIG_PACKAGE_wpad-openssl=y"
+            echo "CONFIG_PACKAGE_wireless-regdb=y"
+            echo "CONFIG_PACKAGE_iwinfo=y"
+            # ---- LuCI 与常用设置 ----
+            echo "CONFIG_PACKAGE_luci=y"
+            echo "CONFIG_PACKAGE_luci-compat=y"
+            echo "CONFIG_PACKAGE_default-settings=y"
+            # ---- 简体中文语言包 ----
+            echo "CONFIG_LUCI_LANG_zh_Hans=y"
+            echo "CONFIG_LUCI_LANG_en=y"
+            echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
+            # ---- iStore 软件中心 + 首页 ----
+            echo "CONFIG_PACKAGE_luci-app-store=y"
+            echo "CONFIG_PACKAGE_luci-app-quickstart=y"
+            # ---- 默认主题 vantage；显式关 argon ----
+            echo "CONFIG_PACKAGE_luci-theme-vantage=y"
+            echo "# CONFIG_PACKAGE_luci-theme-argon is not set"
+            echo "# CONFIG_PACKAGE_luci-app-argon-config is not set"
+          } > .config
+          make defconfig
+
+          # 全量简体中文语言包：把这次构建里所有存在的 luci-i18n-*-zh-cn 显式选入
+          awk '/^config PACKAGE_luci-i18n-.+-zh-cn$/{print $2"=y"}' tmp/.config-package.in >> .config
+          make defconfig
+
+          for s in luci-app-store luci-app-quickstart luci-i18n-base-zh-cn; do
+            grep -qE "^CONFIG_PACKAGE_${s}=y$" .config \
+              || { echo "::error::${s} 未生效（iStore 或中文包会缺失）"; exit 1; }
+          done
+          n=$(grep -cE '^CONFIG_PACKAGE_luci-i18n-.+-zh-cn=y$' .config || true)
+          [ "$n" -ge 5 ] || { echo "::error::简体中文语言包数量异常：$n"; exit 1; }
+          echo "✔ 简体中文语言包 $n 个，iStore 已选入"
+
+          echo ">>> 已选设备："
+          grep "CONFIG_TARGET_DEVICE" .config
+          m=$(grep -cE '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_.*=y$' .config || true)
+          [ "$m" -eq 2 ] || { echo "::error::机型数量应为 2，实际 $m"; exit 1; }
+          echo ">>> WiFi 相关包确认："
+          grep -E "CONFIG_PACKAGE_(kmod-mt7915e|kmod-mt7981-firmware|mt7981-wo-firmware|wpad-openssl)=" .config
+
+      - name: 预置 erofs-utils 源码包（git.kernel.org 在 runner 不可达）
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          set -e
+          v=$(sed -n 's/^PKG_VERSION:=//p' tools/erofs-utils/Makefile | head -1)
+          want=$(sed -n 's/^PKG_HASH:=//p' tools/erofs-utils/Makefile | head -1)
+          f="dl/erofs-utils-${v}.tar.gz"
+          mkdir -p dl
+          if [ -s "$f" ] && [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$want" ]; then
+            echo "✔ $f 已存在且校验通过，跳过"
+            exit 0
+          fi
+          url="https://github.com/erofs/erofs-utils/archive/refs/tags/v${v}.tar.gz"
+          echo ">>> 下载 $url"
+          ok=0
+          for i in 1 2 3; do
+            if curl -fsSL --connect-timeout 20 --retry 3 -o "$f.tmp" "$url"; then ok=1; break; fi
+            echo ">>> 第 $i 次下载失败，5 秒后重试"
+            sleep 5
+          done
+          [ "$ok" = 1 ] || { echo "::error::erofs-utils 源码包下载失败"; exit 1; }
+          got=$(sha256sum "$f.tmp" | cut -d' ' -f1)
+          if [ "$got" != "$want" ]; then
+            echo "::error::erofs-utils sha256 不匹配 got=$got want=$want"
+            rm -f "$f.tmp"
+            exit 1
+          fi
+          mv -f "$f.tmp" "$f"
+          echo "✔ 已预置 $f（sha256 校验通过）"
+
+      - name: 下载软件包
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          make download -j$(nproc)
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: 编译
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          echo ">>> 开始编译"
+          if ! make -j$(nproc); then
+            echo ">>> 并行编译失败，改用单线程重试以定位错误"
+            make -j1 V=s || { echo ">>> ❌ 编译失败"; exit 1; }
+          fi
+          echo ">>> 收集固件到 out/"
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          B=bin/targets/mediatek/filogic
+          ls -lh "$B" | head -40
+          for d in cmcc_rax3000m-nand cmcc_xr30-nand; do
+            cp -f "$B"/*"$d"*squashfs-sysupgrade* "$GITHUB_WORKSPACE/out/" 2>/dev/null || true
+            cp -f "$B"/*"$d"*squashfs-factory*    "$GITHUB_WORKSPACE/out/" 2>/dev/null || true
+            cp -f "$B"/*"$d"*initramfs*           "$GITHUB_WORKSPACE/out/" 2>/dev/null || true
+            ls "$GITHUB_WORKSPACE/out"/*"$d"*sysupgrade* >/dev/null 2>&1 \
+              || { echo ">>> ❌ $d 没有产出 sysupgrade 固件"; exit 1; }
+          done
+          ls -lh "$GITHUB_WORKSPACE/out/"
+          echo ">>> ✅ 完成，共 $(ls "$GITHUB_WORKSPACE/out" | wc -l) 个固件"
+
+      - name: 产物改名（openwrt- → lede-）
+        run: |
+          shopt -s nullglob
+          renamed=0
+          for f in "$GITHUB_WORKSPACE"/out/openwrt-*; do
+            b=$(basename "$f")
+            mv -f "$f" "$GITHUB_WORKSPACE/out/lede-${b#openwrt-}"
+            renamed=$((renamed+1))
+          done
+          echo "已把 $renamed 个产物改名为 lede- 前缀"
+
+      - name: 上传到 Release
+        working-directory: ${{ github.workspace }}/lede
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          dir="$GITHUB_WORKSPACE/out"
+          TAG="Lede-RAX3000M-256M-$(TZ=Asia/Shanghai date +%Y-%m-%d)"
+          echo ">>> 上传 RAX3000M / XR30 → $TAG（$(ls "$dir" | wc -l) 个文件）"
+
+          {
+            echo "### Lede for CMCC RAX3000M / XR30（NAND 硬改 256M Flash）"
+            echo "- 源码：[tvliving/lede](${REPO_URL}/tree/${REPO_BRANCH})"
+            echo "- 编译时间：$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S') (UTC+8)"
+            echo "- 分区：ubi 由 114MB 扩到 **250.5MB**（0x580000 + 0xFA80000）"
+            echo "- 启动：KERNEL_IN_UBI + sysupgrade-tar，沿用现有 256M U-Boot，不刷 preloader/fip"
+            echo "- WiFi：mt76（kmod-mt7915e）+ factory eeprom 校准，2.4G/5G 双频"
+            echo "- 首页：luci-app-quickstart 仪表盘 + luci-app-store 软件中心 + 全量简体中文包"
+            echo "- 默认 IP：192.168.1.1 / 用户名 root / 密码：无"
+            echo ""
+            echo "> ⚠️ 必须是硬改 256M Flash 且 U-Boot 为 256M 大分区版，128M 的 U-Boot 会启动失败"
+            echo "### 固件列表"
+            ls "$dir"
+          } > notes.md
+
+          # 只创建、不删除：已存在则复用，历史版本全部保留
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Lede RAX3000M / XR30 256M ($(TZ=Asia/Shanghai date +%Y-%m-%d))" \
+              --notes-file "notes.md"
+
+          ok=0
+          for i in 1 2 3 4 5; do
+            if gh release upload "$TAG" "$dir"/* --repo "$GITHUB_REPOSITORY" --clobber; then
+              echo ">>> ✅ 上传完成"
+              ok=1
+              break
+            fi
+            echo ">>> ⚠️ 第 $i 次上传失败，10 秒后重试"
+            sleep 10
+          done
+          [[ "$ok" -eq 1 ]] || { echo ">>> ❌ 上传 5 次均失败"; exit 1; }
+          echo ">>> 🎉 全部上传完成"

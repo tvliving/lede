@@ -129,7 +129,18 @@ jobs:
           PYEOF
 
       - name: Generate configuration file
-        run: make defconfig
+        run: |
+          make defconfig
+          # 简体中文语言包：全量枚举选入（LUCI_LANG_zh_Hans 的 DEFAULT 机制随上游易失效，
+          # 直接按生成的包清单枚举 luci-i18n-*-zh-cn，kconfig 只保留 app 已选中的）
+          awk '/^config PACKAGE_luci-i18n-.+-zh-cn$/{print $2"=y"}' tmp/.config-package.in >> .config
+          echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
+          echo "CONFIG_LUCI_LANG_zh_Hans=y" >> .config
+          make defconfig
+          grep -qE '^CONFIG_PACKAGE_luci-i18n-base-zh-cn=y$' .config \
+            || { echo "::error::简体中文语言包未生效"; exit 1; }
+          n=$(grep -cE '^CONFIG_PACKAGE_luci-i18n-.+-zh-cn=y$' .config || true)
+          echo "✔ 简体中文语言包 $n 个"
 
       - name: Download packages
         run: make download -j16
