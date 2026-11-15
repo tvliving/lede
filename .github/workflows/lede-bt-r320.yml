@@ -205,11 +205,42 @@ jobs:
       - name: 编译
         working-directory: ${{ github.workspace }}/lede
         run: |
-          echo ">>> 开始编译"
-          if ! make -j$(nproc); then
-            echo ">>> 并行编译失败，改用单线程重试以定位错误"
-            make -j1 V=s || { echo ">>> ❌ 编译失败"; exit 1; }
+          set -o pipefail
+          echo ">>> 预构建 tools（并行，失败则串行重试）"
+          # tools 阶段在 -j 下有竞态：2026-11-15 两次运行都死在 tools/elfutils，
+          # 同一棵树 -j1 重跑 56 秒就过了。先单独装 tools，失败再串行补一次。
+          rm -f tools.log build.log
+          if ! make -j$(nproc) tools/install > tools.log 2>&1; then
+            echo ">>> ⚠️ tools 并行失败，改单线程重试"
+            grep -nE 'Error [0-9]+|error:|No rule to make target' tools.log | tail -20 || true
+            make -j1 tools/install 2>&1 | tail -60 || { echo ">>> ❌ tools 编译失败"; exit 1; }
           fi
+          echo ">>> tools 就绪，开始 world"
+          ok=0
+          for attempt in 1 2 3; do
+            echo ">>> world 第 $attempt 轮"
+            if make -j$(nproc) 2>&1 | tee -a build.log; then ok=1; break; fi
+            echo ">>> ⚠️ 第 $attempt 轮失败，取失败包详细日志"
+            grep -nE 'Error [0-9]+|error:|No rule to make target|failed to build' build.log | tail -40 || true
+            pkgs=$(grep -oE '[A-Za-z0-9_./-]+ failed to build' build.log | awk '{print $1}' | sort -u || true)
+            [ -n "$pkgs" ] || { echo ">>> ❌ 日志里没识别出失败包"; exit 1; }
+            die=0
+            for pkg in $pkgs; do
+              case "$pkg" in
+                target/linux) tgt="target/install" ;;
+                *) tgt="$pkg/compile" ;;
+              esac
+              echo ">>> ===== 详细错误（make -j1 V=s $tgt）====="
+              if timeout 3600 make -j1 V=s "$tgt" 2>&1 | tail -300; then
+                echo ">>> ⚠️ $tgt 单线程重跑成功（并行竞态），继续"
+              else
+                echo ">>> ❌ $tgt 单线程重跑仍失败"
+                die=1
+              fi
+            done
+            [ "$die" = 1 ] && { echo ">>> ❌ 编译失败"; exit 1; }
+          done
+          [ "$ok" = 1 ] || { echo ">>> ❌ 编译 3 轮后仍未成功"; exit 1; }
           echo ">>> 收集固件到 out/"
           mkdir -p "$GITHUB_WORKSPACE/out"
           find bin/targets/mediatek/filogic -type f \( -name "*squashfs-sysupgrade*" -o -name "*squashfs-factory*" -o -name "*initramfs*" \) \
