@@ -31,6 +31,16 @@ CONFIGURE_ARGS += \
 	--disable-obsolete-api \
 	--enable-hashes=solaris
 
+# libxcrypt 的 configure 会用 perl 跑 build-aux/scripts/expand-selected-hashes，
+# 该脚本开头是 `use open qw(:std :utf8);`，需要 perl 核心模块 open.pm。
+# 构建树里一旦装过精简版 host perl（staging_dir/host/bin/perl，PATH 优先级高于
+# /usr/bin），configure 就会挑到它，于是报：
+#   Can't locate open.pm in @INC ... at build-aux/scripts/expand-selected-hashes line 20
+#   configure: error: bad value 'solaris' for --enable-hashes
+# 这里直接把 configure 的 PERL 缓存变量钉到系统 perl（模块完整）。
+HOST_PERL:=$(shell command -v /usr/bin/perl 2>/dev/null || command -v perl 2>/dev/null)
+CONFIGURE_ARGS += $(if $(HOST_PERL),ac_cv_path_PERL=$(HOST_PERL))
+
 define Package/libxcrypt/install
 	true
 endef

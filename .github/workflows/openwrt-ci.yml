@@ -147,7 +147,21 @@ jobs:
 
       - name: Compile firmware
         run: |
-          make -j$(nproc) || make -j1 V=s
+          # 并行编译的输出会把真正原因埋在几千行里（上次 libxcrypt 就只留下一句
+          # "failed to build"，无从下手）。这里落盘 build.log，失败后按
+          # "xxx failed to build" 逐包用 -j1 V=s 重跑，把详细错误打进日志。
+          set -o pipefail
+          if ! make -j$(nproc) 2>&1 | tee build.log; then
+            echo "::warning::并行编译失败，按失败包取详细日志"
+            grep -nE 'Error [0-9]+|error:|No rule to make target|failed to build' build.log | tail -40 || true
+            pkgs=$(grep -oE '[A-Za-z0-9_./-]+ failed to build' build.log | awk '{print $1}' | sort -u || true)
+            for pkg in $pkgs; do
+              echo ""
+              echo "===== 详细错误（make -j1 V=s $pkg/compile）====="
+              timeout 2400 make -j1 V=s "$pkg/compile" 2>&1 | tail -200 || true
+            done
+            exit 1
+          fi
           echo "======================="
           echo "Space usage:"
           echo "======================="
