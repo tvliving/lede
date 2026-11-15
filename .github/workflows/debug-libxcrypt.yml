@@ -16,23 +16,28 @@ jobs:
         run: |
           sudo -E apt-get update
           sudo -E apt-get -y install build-essential autoconf automake libtool pkg-config \
-            gettext bison flex gawk unzip wget rsync python3 perl patch cpio rsync \
-            libncurses5-dev zlib1g-dev gcc-multilib g++-multilib
+            gettext bison flex gawk unzip wget rsync python3 perl patch cpio \
+            libncurses5-dev zlib1g-dev gcc-multilib g++-multilib libelf-dev
 
       - name: defconfig
         run: |
           make defconfig >/dev/null 2>&1 || true
           grep -c . .config || true
 
+      - name: Build toolchain
+        run: |
+          make -j$(nproc) tools/install toolchain/install >/tmp/.tc.log 2>&1 || \
+            { echo "toolchain failed"; tail -n 40 /tmp/.tc.log; exit 1; }
+          echo "toolchain ok"
+
       - name: Build libxcrypt verbose
         run: |
           set +e
           make package/libs/xcrypt/libxcrypt/compile V=s 2>&1 | tee /tmp/libxcrypt.log
-          echo "exit=$?"
           echo "=========== tail ==========="
-          tail -n 120 /tmp/libxcrypt.log
-          ls -la build_dir/target-*/libxcrypt-*/ 2>/dev/null | head -40
+          tail -n 150 /tmp/libxcrypt.log
           for f in build_dir/target-*/libxcrypt-*/config.log; do
             echo "==== $f ===="
             tail -n 60 "$f"
           done
+          exit 0
