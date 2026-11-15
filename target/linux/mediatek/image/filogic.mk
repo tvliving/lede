@@ -1003,6 +1003,27 @@ define Device/philips_hy3000
 endef
 TARGET_DEVICES += philips_hy3000
 
+# Globitel BT-R320（MT7981B + MT7531AE + eMMC）
+# 移植自 EasongChung/Actions-BT-R320-Immortalwrt-6.6：
+#   内核单独一个 FIT 分区 + rootfs 独立分区（PARTLABEL=rootfs）+ sysupgrade-tar，
+#   沿用机器现有 U-Boot，不需要重刷 preloader/fip/gpt。
+define Device/globitel_bt-r320
+  DEVICE_VENDOR := Globitel
+  DEVICE_MODEL := BT-R320
+  DEVICE_DTS := mt7981b-globitel-bt-r320
+  DEVICE_DTS_DIR := ../dts
+  # kmod-mt7981-firmware 会拉起 kmod-mt7915e（mt76），这里显式再写一次双保险，
+  # 确保固件自带 WiFi 驱动，LuCI 才有“网络 → 无线”菜单
+  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware \
+	kmod-usb3 f2fsck mkf2fs
+  KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  SUPPORTED_DEVICES += globitel,bt-r320
+endef
+TARGET_DEVICES += globitel_bt-r320
+
 define Device/qihoo_360t7
   DEVICE_VENDOR := Qihoo
   DEVICE_MODEL := 360T7

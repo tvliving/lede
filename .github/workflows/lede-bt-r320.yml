@@ -1,0 +1,273 @@
+#=====================================================================================
+# Build Lede (tvliving/lede) for Globitel BT-R320 (MT7981B / eMMC)
+#=====================================================================================
+# 单设备独立编译：globitel_bt-r320（Globitel BT-R320，MT7981B + MT7531AE + 128G eMMC）
+# 方案移植自 EasongChung/Actions-BT-R320-Immortalwrt-6.6（ImmortalWrt 24.10-6.6）：
+#   内核单独一个 FIT 分区 + rootfs 独立分区 + sysupgrade-tar 升级包，
+#   DTS 用 root=PARTLABEL=rootfs 由内核自己找根分区，
+#   沿用机器现有 U-Boot（不刷 preloader / fip / gpt）。
+#
+# 设备支持（DTS / filogic.mk / 02_network / platform.sh）已随本 workflow 一起提交进
+# tvliving/lede master：
+#   - target/linux/mediatek/dts/mt7981b-globitel-bt-r320.dts
+#   - target/linux/mediatek/image/filogic.mk（Device/globitel_bt-r320）
+#   - filogic/base-files/etc/board.d/02_network（lan1 lan2 lan3 + wan）
+#   - filogic/base-files/lib/upgrade/platform.sh（emmc_do_upgrade / emmc_copy_config）
+# WiFi：mt76（kmod-mt7915e），DTS 里 mediatek,mtd-eeprom/nvmem 取 eMMC factory 0x0 校准数据
+#
+# 首页 / iStore / 中文：与 lede-hy3000.yml 同一套（kidsin9 的
+#   luci-app-store + luci-app-quickstart + taskd 依赖链 + 全量 zh-cn 语言包）
+# 注意：必须克隆 tvliving/lede（设备支持在 fork 里），不能克隆 coolsnowwolf/lede
+# Release 标签 Lede-BT-R320-YYYY-MM-DD，只创建不删除
+#=====================================================================================
+
+name: Build Lede BT-R320
+
+on:
+  workflow_dispatch:
+
+env:
+  REPO_URL: https://github.com/tvliving/lede
+  REPO_BRANCH: master
+  TZ: Asia/Shanghai
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      - name: 清理 runner 磁盘空间
+        run: |
+          # 注意：不要删除 /etc/apt/sources.list.d/ —— ubuntu-24.04 的 apt 源就在这里
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          sudo -E apt-get -y purge azure-cli* ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
+          df -hT
+
+      - name: 初始化编译环境
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -y update
+          sudo -E apt-get -y install build-essential clang cmake cpio curl device-tree-compiler ecj fastjar \
+            flex gawk gettext gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool \
+            libelf-dev libglib2.0-dev libgmp-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
+            libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm \
+            lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip \
+            python3-ply python3-docutils python3-pyelftools qemu-utils re2c rsync scons squashfs-tools \
+            subversion swig texinfo unzip vim wget xmlto xxd zlib1g-dev
+          git config --global user.name "GitHub Actions" && git config --global user.email "actions@github.com"
+
+      - name: 克隆 lede 源码并更新 feeds
+        working-directory: ${{ github.workspace }}
+        run: |
+          df -hT $PWD
+          git clone --depth 1 ${REPO_URL} -b ${REPO_BRANCH} lede
+          cd lede
+          echo "================= 最新提交 ================="
+          git log -1 --format="commit: %H  date: %ci"
+          echo "================= 确认 BT-R320 设备支持 ================="
+          grep -q "define Device/globitel_bt-r320" target/linux/mediatek/image/filogic.mk \
+            || { echo "❌ filogic.mk 中没有 globitel_bt-r320，请确认设备支持已提交"; exit 1; }
+          ls target/linux/mediatek/dts/mt7981b-globitel-bt-r320.dts
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          # ---- 默认主题 vantage：树内已 vendor，兜底再拉一次；同时从 feeds 移除 argon ----
+          if [ ! -f package/luci-theme-vantage/Makefile ]; then
+            git clone -q --depth 1 --filter=blob:none --sparse \
+              https://github.com/kiddin9/op-packages.git /tmp/kiddin9
+            (cd /tmp/kiddin9 && git sparse-checkout set luci-theme-vantage luci-app-vantage)
+            cp -a /tmp/kiddin9/luci-theme-vantage /tmp/kiddin9/luci-app-vantage package/
+          fi
+          test -f package/luci-theme-vantage/Makefile || { echo "::error::vantage 主题包缺失"; exit 1; }
+          echo "✔ vantage 主题包就绪（30_luci-theme-vantage 首启自动设为默认主题）"
+          rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
+          echo "✔ argon 主题已从 feeds 移除"
+
+      # BT-R320 为 eMMC 启动（≥128M），整机安装 iStore 软件中心 + 首页
+      - name: 安装 iStore 软件中心与首页包（树内 vendor）
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          git clone -q --depth 1 --filter=blob:none --sparse \
+            https://github.com/kiddin9/op-packages.git /tmp/kiddin9-store
+          (cd /tmp/kiddin9-store && git sparse-checkout set luci-app-store luci-app-quickstart quickstart taskd luci-lib-taskd luci-lib-xterm)
+          cp -a /tmp/kiddin9-store/luci-app-store /tmp/kiddin9-store/luci-app-quickstart \
+                /tmp/kiddin9-store/quickstart /tmp/kiddin9-store/taskd \
+                /tmp/kiddin9-store/luci-lib-taskd /tmp/kiddin9-store/luci-lib-xterm package/
+          for p in luci-app-store luci-app-quickstart quickstart taskd luci-lib-taskd luci-lib-xterm; do
+            test -f "package/$p/Makefile" || { echo "::error::iStore 包缺失: $p"; exit 1; }
+          done
+          echo "✔ iStore 软件中心(luci-app-store) + 首页(luci-app-quickstart) 包就绪"
+
+      - name: 生成配置（BT-R320 + WiFi 驱动全量选入）
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          {
+            echo "CONFIG_TARGET_mediatek=y"
+            echo "CONFIG_TARGET_mediatek_filogic=y"
+            echo "CONFIG_TARGET_MULTI_PROFILE=y"
+            echo "CONFIG_TARGET_PER_DEVICE_ROOTFS=y"
+            echo "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_globitel_bt-r320=y"
+            # ---- WiFi 驱动/固件（双保险：DEVICE_PACKAGES 已含，这里再显式选入）----
+            echo "CONFIG_PACKAGE_kmod-mt7915e=y"
+            echo "CONFIG_PACKAGE_kmod-mt7981-firmware=y"
+            echo "CONFIG_PACKAGE_mt7981-wo-firmware=y"
+            echo "CONFIG_PACKAGE_wpad-openssl=y"
+            echo "CONFIG_PACKAGE_wireless-regdb=y"
+            echo "CONFIG_PACKAGE_iwinfo=y"
+            # ---- LuCI 与常用设置 ----
+            echo "CONFIG_PACKAGE_luci=y"
+            echo "CONFIG_PACKAGE_luci-compat=y"
+            # default-settings 已在 include/target.mk 的 DEFAULT_PACKAGES 里，
+            # 原来写的 default-settings-chn 是个不存在的符号（会被 kconfig 静默忽略）
+            echo "CONFIG_PACKAGE_default-settings=y"
+            # ---- 简体中文语言包 ----
+            # LUCI_LANG_zh_Hans 让 luci-i18n-*-zh-cn 的 DEFAULT 变为 y；
+            # 再显式点名 base，避免上游 DEFAULT 机制变动后界面只剩英文
+            echo "CONFIG_LUCI_LANG_zh_Hans=y"
+            echo "CONFIG_LUCI_LANG_en=y"
+            echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
+            # ---- iStore 软件中心 + 首页（eMMC ≥128M，全量安装）----
+            echo "CONFIG_PACKAGE_luci-app-store=y"
+            echo "CONFIG_PACKAGE_luci-app-quickstart=y"
+            # ---- 默认主题 vantage；显式关 argon（即使 PACKAGES 传了也不装）----
+            echo "CONFIG_PACKAGE_luci-theme-vantage=y"
+            echo "# CONFIG_PACKAGE_luci-theme-argon is not set"
+            echo "# CONFIG_PACKAGE_luci-app-argon-config is not set"
+          } > .config
+          make defconfig
+
+          # 全量简体中文语言包：把这次构建里所有存在的 luci-i18n-*-zh-cn 显式选入
+          awk '/^config PACKAGE_luci-i18n-.+-zh-cn$/{print $2"=y"}' tmp/.config-package.in >> .config
+          make defconfig
+
+          # iStore / 中文包断言：这两个都曾因符号写错被 kconfig 静默忽略，
+          # 构建全绿但刷进去没有商店、没有中文，必须在这里卡住
+          for s in luci-app-store luci-app-quickstart luci-i18n-base-zh-cn; do
+            grep -qE "^CONFIG_PACKAGE_${s}=y$" .config \
+              || { echo "::error::${s} 未生效（iStore 或中文包会缺失）"; exit 1; }
+          done
+          n=$(grep -cE '^CONFIG_PACKAGE_luci-i18n-.+-zh-cn=y$' .config || true)
+          [ "$n" -ge 5 ] || { echo "::error::简体中文语言包数量异常：$n"; exit 1; }
+          echo "✔ 简体中文语言包 $n 个，iStore 已选入"
+
+          echo ">>> 已选设备："
+          grep "CONFIG_TARGET_DEVICE" .config
+          echo ">>> WiFi 相关包确认："
+          grep -E "CONFIG_PACKAGE_(kmod-mt7915e|kmod-mt7981-firmware|mt7981-wo-firmware|wpad-openssl|wireless-regdb)=" .config
+
+      - name: 预置 erofs-utils 源码包（git.kernel.org 在 runner 不可达）
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          set -e
+          # tools/erofs-utils 的 PKG_SOURCE_URL 指向 git.kernel.org snapshot，
+          # 该域名在 GitHub runner 上连接超时；openwrt 各镜像站也没有这个文件（404）。
+          # GitHub 的 tag 归档与 kernel.org snapshot 内容完全一致（sha256 相同），
+          # 这里预先把 tarball 放进 dl/，make download 校验通过后即跳过下载。
+          v=$(sed -n 's/^PKG_VERSION:=//p' tools/erofs-utils/Makefile | head -1)
+          want=$(sed -n 's/^PKG_HASH:=//p' tools/erofs-utils/Makefile | head -1)
+          f="dl/erofs-utils-${v}.tar.gz"
+          mkdir -p dl
+          if [ -s "$f" ] && [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$want" ]; then
+            echo "✔ $f 已存在且校验通过，跳过"
+            exit 0
+          fi
+          url="https://github.com/erofs/erofs-utils/archive/refs/tags/v${v}.tar.gz"
+          echo ">>> 下载 $url"
+          ok=0
+          for i in 1 2 3; do
+            if curl -fsSL --connect-timeout 20 --retry 3 -o "$f.tmp" "$url"; then ok=1; break; fi
+            echo ">>> 第 $i 次下载失败，5 秒后重试"
+            sleep 5
+          done
+          [ "$ok" = 1 ] || { echo "::error::erofs-utils 源码包下载失败"; exit 1; }
+          got=$(sha256sum "$f.tmp" | cut -d' ' -f1)
+          if [ "$got" != "$want" ]; then
+            echo "::error::erofs-utils sha256 不匹配 got=$got want=$want"
+            rm -f "$f.tmp"
+            exit 1
+          fi
+          mv -f "$f.tmp" "$f"
+          echo "✔ 已预置 $f（sha256 校验通过）"
+
+      - name: 下载软件包
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          make download -j$(nproc)
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: 编译
+        working-directory: ${{ github.workspace }}/lede
+        run: |
+          echo ">>> 开始编译"
+          if ! make -j$(nproc); then
+            echo ">>> 并行编译失败，改用单线程重试以定位错误"
+            make -j1 V=s || { echo ">>> ❌ 编译失败"; exit 1; }
+          fi
+          echo ">>> 收集固件到 out/"
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          find bin/targets/mediatek/filogic -type f \( -name "*squashfs-sysupgrade*" -o -name "*squashfs-factory*" -o -name "*initramfs*" \) \
+            ! -name "*json*" -exec cp {} "$GITHUB_WORKSPACE/out/" \;
+          ls -lh "$GITHUB_WORKSPACE/out/"
+          n=$(ls "$GITHUB_WORKSPACE/out" | wc -l)
+          [[ "$n" -eq 0 ]] && { echo ">>> ❌ 没有产出任何固件"; exit 1; }
+          echo ">>> ✅ 完成，共 $n 个固件"
+
+      - name: 产物改名（openwrt- → lede-）
+        run: |
+          shopt -s nullglob
+          renamed=0
+          for f in "$GITHUB_WORKSPACE"/out/openwrt-*; do
+            b=$(basename "$f")
+            mv -f "$f" "$GITHUB_WORKSPACE/out/lede-${b#openwrt-}"
+            renamed=$((renamed+1))
+          done
+          echo "已把 $renamed 个产物改名为 lede- 前缀"
+
+      - name: 上传到 Release
+        working-directory: ${{ github.workspace }}/lede
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          dir="$GITHUB_WORKSPACE/out"
+          TAG="Lede-BT-R320-$(TZ=Asia/Shanghai date +%Y-%m-%d)"
+          echo ">>> 上传 BT-R320 → $TAG（$(ls "$dir" | wc -l) 个文件）"
+
+          {
+            echo "### Lede for Globitel BT-R320 (MT7981B + eMMC)"
+            echo "- 源码：[tvliving/lede](${REPO_URL}/tree/${REPO_BRANCH})"
+            echo "- 编译时间：$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S') (UTC+8)"
+            echo "- 默认 IP：192.168.1.1 / 用户名 root / 密码：无"
+            echo "- WiFi：mt76（kmod-mt7915e）+ 2.4G/5G 双频，LuCI 网络→无线可用"
+            echo "- 机型：Globitel BT-R320（MT7981B + MT7531AE + eMMC，lan1/2/3 + wan）"
+            echo "- 升级：sysupgrade-tar（内核 FIT 独立分区 + rootfs 独立分区，root=PARTLABEL=rootfs）"
+            echo "### 固件列表"
+            ls "$dir"
+          } > notes.md
+
+          # 只创建、不删除：已存在则复用，历史版本全部保留
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Lede BT-R320 ($(TZ=Asia/Shanghai date +%Y-%m-%d))" \
+              --notes-file "notes.md"
+
+          ok=0
+          for i in 1 2 3 4 5; do
+            if gh release upload "$TAG" "$dir"/* --repo "$GITHUB_REPOSITORY" --clobber; then
+              echo ">>> ✅ 上传完成"
+              ok=1
+              break
+            fi
+            echo ">>> ⚠️ 第 $i 次上传失败，10 秒后重试"
+            sleep 10
+          done
+          [[ "$ok" -eq 1 ]] || { echo ">>> ❌ 上传 5 次均失败"; exit 1; }
+          echo ">>> 🎉 全部上传完成"
