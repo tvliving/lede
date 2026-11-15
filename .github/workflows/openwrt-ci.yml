@@ -158,9 +158,15 @@ jobs:
             grep -nE 'Error [0-9]+|error:|No rule to make target|failed to build' build.log | tail -40 || true
             pkgs=$(grep -oE '[A-Za-z0-9_./-]+ failed to build' build.log | awk '{print $1}' | sort -u || true)
             for pkg in $pkgs; do
+              # target/linux 的失败点是镜像生成（target/linux/install），
+              # 重跑 compile 只会再编译一遍内核，永远看不到真正报错
+              case "$pkg" in
+                target/linux) tgt="target/install" ;;
+                *) tgt="$pkg/compile" ;;
+              esac
               echo ""
-              echo "===== 详细错误（make -j1 V=s $pkg/compile）====="
-              timeout 2400 make -j1 V=s "$pkg/compile" 2>&1 | tail -200 || true
+              echo "===== 详细错误（make -j1 V=s $tgt）====="
+              timeout 2400 make -j1 V=s "$tgt" 2>&1 | tail -300 || true
             done
             exit 1
           fi

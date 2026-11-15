@@ -29,7 +29,17 @@ CONFIGURE_ARGS += \
 	--disable-shared \
 	--disable-failure-tokens \
 	--disable-obsolete-api \
-	--enable-hashes=solaris
+	--enable-hashes=solaris \
+	--disable-werror
+
+# libxcrypt 的 configure 默认 warnings_are_errors=true（即自动加 -Werror）。
+# 它的 lib/gen-des-tables.c 用非字面量 format 调 snprintf/sprintf，而 musl 的
+# fortify/stdio.h 在这种情况下会触发：
+#   error: format not a string literal, argument types not checked
+#          [-Werror=format-nonliteral]
+# 结果 lib/gen-des-tables.o 编译失败，整包 Error 2。
+# 这里显式 --disable-werror 关掉上游的 -Werror（GCC 13 起 fortify 更严格，
+# 这个报错是必现的）。
 
 # libxcrypt 的 configure 会用 perl 跑 build-aux/scripts/expand-selected-hashes，
 # 该脚本开头是 `use open qw(:std :utf8);`，需要 perl 核心模块 open.pm。
