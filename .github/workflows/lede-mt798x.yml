@@ -25,7 +25,7 @@ on:
           - MT7988
 
 env:
-  REPO_URL: https://github.com/coolsnowwolf/lede
+  REPO_URL: https://github.com/tvliving/lede
   REPO_BRANCH: master
   TZ: Asia/Shanghai
 
@@ -311,7 +311,7 @@ jobs:
 
             {
               echo "### Lede for $chip"
-              echo "- 源码：[coolsnowwolf/lede](${REPO_URL}/tree/${REPO_BRANCH})"
+              echo "- 源码：[tvliving/lede](${REPO_URL}/tree/${REPO_BRANCH})"
               echo "- 编译时间：$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S') (UTC+8)"
               echo "- 默认 IP：192.168.1.1 / 用户名 root / 密码：无"
               echo "### 固件列表"
