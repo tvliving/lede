@@ -611,7 +611,9 @@ define KernelPackage/fs-ntfs
   KCONFIG:=CONFIG_NTFS_FS
   FILES:=$(LINUX_DIR)/fs/ntfs/ntfs.ko
   AUTOLOAD:=$(call AutoLoad,30,ntfs)
-  DEPENDS+=@!LINUX_6_12
+  # 老 NTFS 驱动（fs/ntfs）已被上游内核移除：6.12 起不再存在，6.18/7.x 同样没有，
+  # 上游只写了 @!LINUX_6_12，导致 6.18 仍然尝试打包 ntfs.ko 而失败（模块缺失）。
+  DEPENDS+=@!LINUX_6_12 @!LINUX_6_18 @!LINUX_7_3
   $(call AddDepends/nls)
 endef
 
