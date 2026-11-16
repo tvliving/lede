@@ -86,17 +86,33 @@ jobs:
             [ -n "$detail" ] || detail='（日志为空）'
             echo "::error title=$1::$detail"
           }
-          # 再单独给一条「关键行」摘要，方便一眼扫到
+          # 再单独给一条「关键行」摘要：不限尾部，整份日志里的 error 行都抓出来
+          # （silent 子 make 失败时真正的错误经常在日志中段，只抓 tail 会漏）
           annotate_grep() {  # $1=title $2=logfile
             local detail
-            detail=$(grep -E 'error:|Error [0-9]+|No rule to make target' "$2" | tail -8 \
-                     | cut -c1-300 | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/$/%0A/' | tr -d '\n')
+            detail=$(grep -nE 'error:|Error [0-9]+|ERROR:|\*\*\* |No rule to make target|No such file' "$2" \
+                     | head -40 | cut -c1-300 \
+                     | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/$/%0A/' | tr -d '\n')
             [ -n "$detail" ] && echo "::error title=$1（关键行）::$detail"
           }
 
           echo "===== feeds ====="
           ./scripts/feeds update -a > feeds.log 2>&1 || echo "::warning::feeds update 有报错（不一定是致命）"
           ./scripts/feeds install -a >> feeds.log 2>&1 || echo "::warning::feeds install 有报错（不一定是致命）"
+
+          # .config 是在 feeds 之前生成的，此时包元数据还不全（日志里会出现
+          # "your configuration is out of sync"）。装完 feeds 再 defconfig 一次，
+          # 让 .config 与 tmp/ 元数据对上，跟 CI 里真实顺序一致。
+          echo "===== feeds 装完后再 defconfig，同步配置 ====="
+          make -j1 prepare-tmpinfo > defconfig.log 2>&1 || true
+          make -j1 defconfig >> defconfig.log 2>&1 || {
+            tail -40 defconfig.log
+            annotate "defconfig 失败（尾部 40 行）" defconfig.log 40
+            exit 1
+          }
+          grep -q '^CONFIG_PACKAGE_kmod-pcie_mhi=m$' .config \
+            || { echo "::error::feeds 后 defconfig 把 kmod-pcie_mhi 丢了"; annotate_grep "defconfig 丢了 kmod-pcie_mhi" defconfig.log; exit 1; }
+          echo "配置已同步，kmod-pcie_mhi=m 仍在"
 
           echo "===== tools（并行，失败则串行重试：这棵树的 tools 有并行竞态）====="
           make -j$(nproc) tools/install > tools.log 2>&1 || {
@@ -111,8 +127,12 @@ jobs:
 
           echo "===== 先建内核（kmod 依赖 $(LINUX_DIR)/.config 与 Module.symvers）====="
           make -j$(nproc) target/linux/compile > kernel.log 2>&1 || {
-            echo "::warning::target/linux 并行失败，改 -j1 重试"
-            make -j1 target/linux/compile >> kernel.log 2>&1 || {
+            # toplevel 调子 make 时带 -s，子 make 静默失败时日志里只剩
+            # "ERROR: target/linux failed to build."，看不到真正原因。
+            # 重试时用 V=sc（OPENWRT_VERBOSE=s + 关掉静默），让子 make 开口。
+            echo "::warning::target/linux 并行失败，改 -j1 V=sc 重试（同时 feeds 元数据已就绪）"
+            make -j1 prepare-tmpinfo >> kernel.log 2>&1 || true
+            make -j1 V=sc target/linux/compile >> kernel.log 2>&1 || {
               tail -60 kernel.log
               annotate "内核编译失败（尾部 60 行）" kernel.log 60
               annotate_grep "内核编译失败" kernel.log
