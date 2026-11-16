@@ -101,8 +101,19 @@ jobs:
           }
           echo "tools 就绪"
 
-          echo "===== 只编 pcie_mhi ====="
-          make -j$(nproc) V=s package/wwan/driver/quectel_MHI/compile > mhi.log 2>&1
+          echo "===== 先建内核（kmod 依赖 $(LINUX_DIR)/.config 与 Module.symvers）====="
+          make -j$(nproc) target/linux/compile > kernel.log 2>&1 || {
+            echo "::warning::target/linux 并行失败，改 -j1 重试"
+            make -j1 target/linux/compile >> kernel.log 2>&1 || {
+              tail -20 kernel.log
+              annotate "内核编译失败" kernel.log 12
+              exit 1
+            }
+          }
+          echo "内核就绪"
+
+          echo "===== 只编 pcie_mhi（-j1 V=s，错误全量落盘）====="
+          make -j1 V=s package/wwan/driver/quectel_MHI/compile > mhi.log 2>&1
           rc=$?
           if [ $rc -eq 0 ]; then
             echo "✔ quectel_MHI 在 x86/64(6.18) 下编译通过——说明 Lede-CI 的失败是别的 target / 并行竞态导致"
