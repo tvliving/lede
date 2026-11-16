@@ -195,10 +195,19 @@ jobs:
               esac
               echo ""
               echo "===== 详细错误（make -j1 V=s $tgt）====="
-              if timeout 3600 make -j1 V=s "$tgt" 2>&1 | tail -300; then
+              dlog="detail-$(echo "$tgt" | tr '/' '_').log"
+              if timeout 3600 make -j1 V=s "$tgt" 2>&1 | tee "$dlog" | tail -300; then
                 echo "::warning::$tgt 单线程重跑成功（并行竞态），继续后续编译"
               else
                 echo "::error::$tgt 单线程重跑仍失败"
+                # 日志要登录才能看，annotation 匿名可读（actions/jobs/<id>/logs 返回
+                # 403 "Must have admin rights"，check-runs/<id>/annotations 则公开）。
+                # 所以把真实 error 行也塞进 annotation，外面不登录就知道错在哪。
+                detail=$(grep -E 'error:|Error [0-9]+|\*\*\* \[' "$dlog" | tail -15 \
+                         | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/$/%0A/' | tr -d '\n')
+                [ -n "$detail" ] || detail=$(tail -15 "$dlog" \
+                         | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/$/%0A/' | tr -d '\n')
+                echo "::error title=真实报错 $tgt::$detail"
                 die=1
               fi
             done

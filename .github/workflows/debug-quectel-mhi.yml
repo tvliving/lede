@@ -1,0 +1,92 @@
+# 单独编译 package/wwan/driver/quectel_MHI（x86/64，内核 6.18），
+# 目的：把真实的编译错误写进 annotation。
+#
+# 背景：Actions 的 job 日志必须登录/有权限才能下载（匿名调
+# /actions/jobs/<id>/logs 会返回 403 "Must have admin rights"），但
+# annotation 是公开可读的：
+#   https://api.github.com/repos/<owner>/<repo>/check-runs/<id>/annotations
+# 所以这个 workflow 失败时会把 error 行拼成一条 ::error 注解，
+# 外部（包括自动化脚本）不登录也能看到到底哪一行编不过。
+name: Debug quectel_MHI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/debug-quectel-mhi.yml'
+      - 'package/wwan/driver/quectel_MHI/**'
+
+permissions:
+  contents: read
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  debug:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: 释放 runner 磁盘空间
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: false
+
+      - name: 安装编译依赖
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install -y build-essential gcc-multilib g++-multilib libc6-dev-i386 \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison bzip2 ccache cmake cpio \
+            curl device-tree-compiler flex gawk gettext genisoimage git gperf haveged help2man \
+            intltool libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev \
+            libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev \
+            libtool lrzsz ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
+            python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev time > /dev/null
+
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 生成最小配置（x86/64，默认内核 6.18）
+        run: |
+          {
+            echo 'CONFIG_TARGET_x86=y'
+            echo 'CONFIG_TARGET_x86_64=y'
+            echo 'CONFIG_TARGET_x86_64_DEVICE_generic=y'
+          } > .config
+          make defconfig > /dev/null
+          echo 'CONFIG_PACKAGE_kmod-pcie_mhi=m' >> .config
+          make defconfig > /dev/null
+          grep -q '^CONFIG_TARGET_x86_64=y$' .config \
+            || { echo '::error::x86/64 target 配置生成失败'; exit 1; }
+          grep -q '^CONFIG_PACKAGE_kmod-pcie_mhi=m$' .config \
+            || { echo '::error::kmod-pcie_mhi 没被选上（包名变了？看 package/wwan/driver/quectel_MHI/Makefile）'; exit 1; }
+          echo "已选入的 kernel 模块数量: $(grep -c '^CONFIG_PACKAGE_kmod-.*=m$' .config)"
+
+      - name: 编译（并行建工具链 + 内核准备，最后编这个包）
+        run: |
+          set -o pipefail
+          echo "===== tools ====="
+          make -j$(nproc) tools/install 2>&1 | tail -5
+          echo "===== toolchain + 内核准备 + 该包 ====="
+          if make -j$(nproc) V=s package/wwan/driver/quectel_MHI/compile 2>&1 | tee mhi.log; then
+            echo "✔ quectel_MHI 在 x86/64(6.18) 下编译通过——说明 Lede-CI 的失败是别的 target / 并行竞态导致"
+          else
+            echo "::error title=quectel_MHI 编译失败::复现成功，真实报错见下一条 annotation"
+            detail=$(grep -E 'error:|Error [0-9]+|\*\*\* \[' mhi.log | tail -15 \
+                     | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/$/%0A/' | tr -d '\n')
+            if [ -z "$detail" ]; then
+              detail=$(tail -15 mhi.log | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/$/%0A/' | tr -d '\n')
+            fi
+            echo "::error title=quectel_MHI 真实报错::$detail"
+            exit 1
+          fi
