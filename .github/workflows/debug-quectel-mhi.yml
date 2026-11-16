@@ -74,19 +74,41 @@ jobs:
 
       - name: 编译（并行建工具链 + 内核准备，最后编这个包）
         run: |
-          set -o pipefail
-          echo "===== tools ====="
-          make -j$(nproc) tools/install 2>&1 | tail -5
-          echo "===== toolchain + 内核准备 + 该包 ====="
-          if make -j$(nproc) V=s package/wwan/driver/quectel_MHI/compile 2>&1 | tee mhi.log; then
-            echo "✔ quectel_MHI 在 x86/64(6.18) 下编译通过——说明 Lede-CI 的失败是别的 target / 并行竞态导致"
-          else
-            echo "::error title=quectel_MHI 编译失败::复现成功，真实报错见下一条 annotation"
-            detail=$(grep -E 'error:|Error [0-9]+|\*\*\* \[' mhi.log | tail -15 \
+          # 注意：actions 的 run 默认是 bash -e -o pipefail，任何一步失败都会直接退出，
+          # 所以这里全部用 `|| rc=$?` 收口，确保失败也能走到诊断/注解。
+          set +e
+          annotate() {  # $1=title $2=logfile $3=行数
+            local detail
+            detail=$(grep -E 'error:|Error [0-9]+|\*\*\* \[|No rule to make target' "$2" | tail -"${3:-15}" \
                      | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/$/%0A/' | tr -d '\n')
-            if [ -z "$detail" ]; then
-              detail=$(tail -15 mhi.log | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/$/%0A/' | tr -d '\n')
-            fi
-            echo "::error title=quectel_MHI 真实报错::$detail"
-            exit 1
+            [ -n "$detail" ] || detail=$(tail -"${3:-15}" "$2" \
+                     | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/$/%0A/' | tr -d '\n')
+            echo "::error title=$1::$detail"
+          }
+
+          echo "===== feeds ====="
+          ./scripts/feeds update -a > feeds.log 2>&1 || echo "::warning::feeds update 有报错（不一定是致命）"
+          ./scripts/feeds install -a >> feeds.log 2>&1 || echo "::warning::feeds install 有报错（不一定是致命）"
+
+          echo "===== tools（并行，失败则串行重试：这棵树的 tools 有并行竞态）====="
+          make -j$(nproc) tools/install > tools.log 2>&1 || {
+            echo "::warning::tools 并行失败，改 -j1 重试"
+            make -j1 tools/install >> tools.log 2>&1 || {
+              tail -20 tools.log
+              annotate "tools 编译失败" tools.log 12
+              exit 1
+            }
+          }
+          echo "tools 就绪"
+
+          echo "===== 只编 pcie_mhi ====="
+          make -j$(nproc) V=s package/wwan/driver/quectel_MHI/compile > mhi.log 2>&1
+          rc=$?
+          if [ $rc -eq 0 ]; then
+            echo "✔ quectel_MHI 在 x86/64(6.18) 下编译通过——说明 Lede-CI 的失败是别的 target / 并行竞态导致"
+            exit 0
           fi
+          echo "make 退出码 $rc；日志尾部："
+          tail -30 mhi.log
+          annotate "quectel_MHI 真实报错" mhi.log 15
+          exit 1
