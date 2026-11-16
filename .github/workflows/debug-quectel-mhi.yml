@@ -7,7 +7,7 @@
 #   https://api.github.com/repos/<owner>/<repo>/check-runs/<id>/annotations
 # 所以这个 workflow 失败时会把 error 行拼成一条 ::error 注解，
 # 外部（包括自动化脚本）不登录也能看到到底哪一行编不过。
-name: Debug quectel_MHI
+name: Debug quectel_MHI（诊断用，失败不阻塞）
 
 on:
   workflow_dispatch:
@@ -73,6 +73,9 @@ jobs:
           echo "已选入的 kernel 模块数量: $(grep -c '^CONFIG_PACKAGE_kmod-.*=m$' .config)"
 
       - name: 编译（并行建工具链 + 内核准备，最后编这个包）
+        # 这是纯诊断用的 workflow：失败结论通过 annotation 输出即可，
+        # 不让它把仓库的 Actions 页面刷成红的（continue-on-error 不影响注解）。
+        continue-on-error: true
         run: |
           # 注意：actions 的 run 默认是 bash -e -o pipefail，任何一步失败都会直接退出，
           # 所以这里全部用 `|| rc=$?` 收口，确保失败也能走到诊断/注解。
