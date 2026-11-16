@@ -77,13 +77,21 @@ jobs:
           # 注意：actions 的 run 默认是 bash -e -o pipefail，任何一步失败都会直接退出，
           # 所以这里全部用 `|| rc=$?` 收口，确保失败也能走到诊断/注解。
           set +e
-          annotate() {  # $1=title $2=logfile $3=行数
+          # 注解是可匿名读取的唯一通道，所以直接把日志尾部整段塞进一条 ::error，
+          # 行间用 %0A 转义、% 先转 %%25、单行截 300 字符，避免超过注解上限。
+          annotate() {  # $1=title $2=logfile $3=行数（默认 60）
             local detail
-            detail=$(grep -E 'error:|Error [0-9]+|\*\*\* \[|No rule to make target' "$2" | tail -"${3:-15}" \
+            detail=$(tail -"${3:-60}" "$2" | cut -c1-300 \
                      | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/$/%0A/' | tr -d '\n')
-            [ -n "$detail" ] || detail=$(tail -"${3:-15}" "$2" \
-                     | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/$/%0A/' | tr -d '\n')
+            [ -n "$detail" ] || detail='（日志为空）'
             echo "::error title=$1::$detail"
+          }
+          # 再单独给一条「关键行」摘要，方便一眼扫到
+          annotate_grep() {  # $1=title $2=logfile
+            local detail
+            detail=$(grep -E 'error:|Error [0-9]+|No rule to make target' "$2" | tail -8 \
+                     | cut -c1-300 | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/$/%0A/' | tr -d '\n')
+            [ -n "$detail" ] && echo "::error title=$1（关键行）::$detail"
           }
 
           echo "===== feeds ====="
@@ -105,8 +113,9 @@ jobs:
           make -j$(nproc) target/linux/compile > kernel.log 2>&1 || {
             echo "::warning::target/linux 并行失败，改 -j1 重试"
             make -j1 target/linux/compile >> kernel.log 2>&1 || {
-              tail -20 kernel.log
-              annotate "内核编译失败" kernel.log 12
+              tail -60 kernel.log
+              annotate "内核编译失败（尾部 60 行）" kernel.log 60
+              annotate_grep "内核编译失败" kernel.log
               exit 1
             }
           }
@@ -120,6 +129,7 @@ jobs:
             exit 0
           fi
           echo "make 退出码 $rc；日志尾部："
-          tail -30 mhi.log
-          annotate "quectel_MHI 真实报错" mhi.log 15
+          tail -60 mhi.log
+          annotate "quectel_MHI 真实报错（尾部 60 行）" mhi.log 60
+          annotate_grep "quectel_MHI 真实报错" mhi.log
           exit 1
