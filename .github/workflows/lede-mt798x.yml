@@ -240,6 +240,12 @@ jobs:
             grep "CONFIG_TARGET_DEVICE" .config | sed 's/CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_//;s/=y//' | tr '\n' ' '
             echo ""
 
+            # 关键：清掉上一轮平台留下的镜像产物。bin/targets 只放最终镜像
+            # （工具链/包缓存都在 build_dir/staging_dir，不受影响），不清的话
+            # 下一轮 find bin/targets 会把上一轮平台的固件原样拷进本轮 Release，
+            # 造成跨平台固件混发（实测：MT7986 Release 里混进了 q3000 的包）
+            rm -rf bin/targets
+
             echo ">>> [$chip] 下载软件包"
             make download -j$(nproc)
             find dl -size -1024c -exec rm -f {} \;
