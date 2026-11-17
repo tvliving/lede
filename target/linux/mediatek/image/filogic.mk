@@ -1204,6 +1204,12 @@ ifneq ($(CONFIG_TARGET_ROOTFS_INITRAMFS),)
   ARTIFACTS := initramfs-factory.ubi
   ARTIFACT/initramfs-factory.ubi := append-image-stage initramfs-kernel.bin | ubinize-kernel
 
+
+endif
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += xiaomi_redmi-router-ax6000-stock
+
 # ============================================================================
 # iKuai IK-Q3000 / IK-Q6000（自 XIAOZHAOXSXH / dailook 移植）
 #  - 不产出 preloader / bl31 / gpt 引导工件
@@ -1250,8 +1256,3 @@ define Device/ikuai_q6000-emmc
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += ikuai_q6000-emmc
-
-endif
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-endef
-TARGET_DEVICES += xiaomi_redmi-router-ax6000-stock
