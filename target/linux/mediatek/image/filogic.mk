@@ -1203,6 +1203,54 @@ define Device/xiaomi_redmi-router-ax6000-stock
 ifneq ($(CONFIG_TARGET_ROOTFS_INITRAMFS),)
   ARTIFACTS := initramfs-factory.ubi
   ARTIFACT/initramfs-factory.ubi := append-image-stage initramfs-kernel.bin | ubinize-kernel
+
+# ============================================================================
+# iKuai IK-Q3000 / IK-Q6000（自 XIAOZHAOXSXH / dailook 移植）
+#  - 不产出 preloader / bl31 / gpt 引导工件
+# ============================================================================
+
+#===== iKuai Q3000 (SPI-NAND, FIT) =====
+define Device/ikuai_q3000
+  DEVICE_VENDOR := iKuai
+  DEVICE_MODEL := Q3000
+  DEVICE_DTS := mt7981b-ikuai-q3000
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  IMAGE_SIZE := 114816k
+  KERNEL_IN_UBI := 1
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += ikuai_q3000
+
+#===== iKuai Q6000 (NAND) =====
+define Device/ikuai_q6000
+  DEVICE_VENDOR := iKuai
+  DEVICE_MODEL := Q6000
+  DEVICE_DTS := mt7986a-ikuai-q6000
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7986-firmware mt7986-wo-firmware kmod-mtd-rw
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += ikuai_q6000
+
+#===== iKuai Q6000 (eMMC) =====
+define Device/ikuai_q6000-emmc
+  DEVICE_VENDOR := iKuai
+  DEVICE_MODEL := Q6000 (eMMC)
+  DEVICE_DTS := mt7986a-ikuai-q6000-emmc
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7986-firmware mt7986-wo-firmware kmod-mtd-rw automount \
+	coremark blkid blockdev fdisk f2fsck mkf2fs kmod-mmc \
+	luci-app-ksmbd luci-i18n-ksmbd-zh-cn ksmbd-utils
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += ikuai_q6000-emmc
+
 endif
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef

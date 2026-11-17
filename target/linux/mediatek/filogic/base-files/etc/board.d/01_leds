@@ -6,6 +6,11 @@ board=$(board_name)
 board_config_update
 
 case $board in
+	ikuai,q3000)
+		ucidef_set_led_default "green" "GREEN" "q3000:green" "1"
+		ucidef_set_led_default "blue" "BLUE" "q3000:blue" "0"
+		ucidef_set_led_default "red" "RED" "q3000:red" "0"
+		;;
 abt,asr3000)
 	ucidef_set_led_netdev "wan" "WAN" "green:wan" "eth1"
 	;;

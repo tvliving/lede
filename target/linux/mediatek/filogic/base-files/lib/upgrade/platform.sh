@@ -108,6 +108,7 @@ platform_do_upgrade() {
 	huasifei,wh3000-pro|\
 	jdcloud,re-cs-05|\
 	globitel,bt-r320|\
+	ikuai,q6000-emmc|\
 	philips,hy3000)
 		CI_KERNPART="kernel"
 		CI_ROOTPART="rootfs"
@@ -180,6 +181,7 @@ platform_copy_config() {
 	huasifei,wh3000-pro|\
 	jdcloud,re-cs-05|\
 	globitel,bt-r320|\
+	ikuai,q6000-emmc|\
 	philips,hy3000)
 		emmc_copy_config
 		;;
