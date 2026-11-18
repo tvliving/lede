@@ -10,7 +10,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=perf
 PKG_VERSION:=$(LINUX_VERSION)
-PKG_RELEASE:=4
+PKG_RELEASE:=5
 
 PKG_USE_MIPS16:=0
 PKG_BUILD_PARALLEL:=1
@@ -28,7 +28,7 @@ define Package/perf
   SECTION:=devel
   CATEGORY:=Development
   DEPENDS:= +libelf +libdw +PACKAGE_libunwind:libunwind +libpthread +librt +objdump @!IN_SDK @KERNEL_PERF_EVENTS \
-	    +PACKAGE_libbfd:libbfd +PACKAGE_libopcodes:libopcodes +libtraceevent
+	    +PACKAGE_libbfd:libbfd +PACKAGE_libopcodes:libopcodes +libtraceevent +libzstd
   TITLE:=Linux performance monitoring tool
   VERSION:=$(LINUX_VERSION)-$(PKG_RELEASE)
   URL:=http://www.kernel.org
@@ -42,6 +42,10 @@ HOST_CFLAGS += -I$(LINUX_DIR)/tools/include
 
 TARGET_LDFLAGS += $(INTL_LDFLAGS)
 
+# 内核 6.18 起 tools/perf/Makefile.config 在探测到 libelf 带 zstd 支持时，
+# 会对 NO_LIBZSTD 直接 $(error)（"libzstd is required by libelf"）。
+# 因此不再固定 NO_LIBZSTD=1，交给 perf 自行探测：探测到就链 -lzstd，
+# 探测不到会自行置 NO_LIBZSTD 并降级，两种情况都不会中断编译。
 MAKE_FLAGS = \
 	ARCH="$(LINUX_KARCH)" \
 	NO_LIBPERL=1 \
@@ -54,7 +58,6 @@ MAKE_FLAGS = \
 	NO_LIBAUDIT=1 \
 	NO_LIBCRYPTO=1 \
 	NO_LIBUNWIND=1 \
-	NO_LIBZSTD=1 \
 	NO_LIBCAP=1 \
 	CROSS_COMPILE="$(TARGET_CROSS)" \
 	CC="$(TARGET_CC)" \
