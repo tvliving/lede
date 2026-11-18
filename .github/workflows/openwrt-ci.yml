@@ -199,6 +199,37 @@ jobs:
               if timeout 3600 make -j1 V=s "$tgt" 2>&1 | tee "$dlog" | tail -300; then
                 echo "::warning::$tgt 单线程重跑成功（并行竞态），继续后续编译"
               else
+                # 内核模块包（mtd-rw / quectel_MHI 等）的 build 依赖 $(LINUX_DIR)/.config。
+                # 若重跑报 "No rule to make target '.../.config'"，说明内核构建树在进入
+                # package 阶段时已经没有了 .config —— 顶层 make 的工具链版本校验
+                #（cmp .ver_check 不一致就 rm -rf build_dir/target-* staging_dir/target-*）
+                # 会把它清掉：2026-11-18 Lede-CI 44283493905 的单包重跑日志头几行正是
+                # 这个 cmp 失败 + rm -rf + "+ mkdir -p staging_dir/..."，紧接着就是
+                # .config 缺失。这种状态单包重跑不可能成功，必须先把内核树重建出来。
+                if grep -qE "No rule to make target .*\.config'" "$dlog"; then
+                  {
+                    echo "build_dir/target-*:"; ls -ld build_dir/target-* 2>&1 | head -5
+                    echo "linux 目录:"; ls -ld build_dir/target-*/linux-* 2>&1 | head -10
+                    echo "linux-*/.config:"; ls -l build_dir/target-*/linux-*/linux-*/.config 2>&1 | head -10
+                  } > tree-state.log 2>&1
+                  tree_detail=$(sed -e 's/%/%25/g' -e 's/\r//g' -e 's/$/%0A/' tree-state.log | tr -d '\n')
+                  echo "::error title=内核构建树现场 $tgt::$tree_detail"
+                  echo "::warning::$tgt 缺内核 .config，重建 target/linux 后再重试一次"
+                  make -j$(nproc) target/linux/clean > kern-repair.log 2>&1 || true
+                  if timeout 3000 make -j$(nproc) target/linux/compile >> kern-repair.log 2>&1; then
+                    echo "内核树重建完成，重试 $tgt"
+                    if timeout 3600 make -j1 V=s "$tgt" 2>&1 | tee "$dlog.repair" | tail -100; then
+                      echo "::warning::$tgt 内核树重建后单包重跑成功，继续后续编译"
+                      continue
+                    fi
+                    echo "::error::$tgt 内核树重建后仍失败"
+                    tail -40 "$dlog.repair" || true
+                  else
+                    echo "::error::target/linux 重建失败"
+                    tail -40 kern-repair.log || true
+                  fi
+                  die=1
+                fi
                 echo "::error::$tgt 单线程重跑仍失败"
                 # 日志要登录才能看，annotation 匿名可读（actions/jobs/<id>/logs 返回
                 # 403 "Must have admin rights"，check-runs/<id>/annotations 则公开）。
