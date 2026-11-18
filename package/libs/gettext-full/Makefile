@@ -26,9 +26,7 @@ PKG_INSTALL:=1
 PKG_BUILD_DEPENDS:=gettext-full/host libunistring libxml2
 PKG_BUILD_PARALLEL:=1
 
-# 上游 main 这里还有 gnulib-l10n/host（只提供 gnulib 的翻译文件），本树没有该包，
-# 去掉即可：它不影响 libintl/gettext 工具本身的构建与安装。
-HOST_BUILD_DEPENDS:=gperf/host libiconv-full/host libunistring/host libxml2/host
+HOST_BUILD_DEPENDS:=gnulib-l10n/host gperf/host libiconv-full/host libunistring/host libxml2/host
 HOST_BUILD_PARALLEL:=1
 
 PKG_SUBDIRS:= \
@@ -75,9 +73,7 @@ endef
 export GNULIB_SRCDIR:=$(HOST_GNULIB_SRCDIR)
 
 TARGET_CFLAGS += $(FPIC)
-# 0.24.2 的 gnulib 代码需要 C23；上游写的是 -std=gnu23，但本树默认 gcc 13.3
-# 还只认 gnu2x（gnu23 这个别名是 gcc 14 才加的），用 gnu2x 两个版本都能过。
-TARGET_CFLAGS += -std=gnu2x
+TARGET_CFLAGS += -std=gnu23
 ifneq ($(HOST_OS),Linux)
   TARGET_CFLAGS += -I$(STAGING_DIR_HOSTPKG)/include
 endif
