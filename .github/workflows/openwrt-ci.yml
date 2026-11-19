@@ -67,7 +67,7 @@ jobs:
       #===============================================================================
       # feeds 是第三方仓库（coolsnowwolf/packages），不能直接推；把树内补丁复制进
       # 对应 feed 包的 patches/ 目录，由 quilt 在 prepare 阶段打上。
-      # 目前只有一条：jool 4.1.13 在 linux-6.18 上编译失败
+      # jool 4.1.13 在 linux-6.18 上编译失败
       #   rfc7915/6to4.c: 'struct flowi4' has no member named 'flowi4_tos'
       # （6.18 删掉 flowi4_tos，改为 6bit 的 flowi4_dscp；上游 Jool master 已同法修好）
       #===============================================================================
@@ -80,6 +80,21 @@ jobs:
           cp .github/feed-patches/jool/*.patch "$dst"/
           ls -l "$dst"
           echo "✔ jool feed 补丁已就位"
+
+      # v4l2loopback 0.13.2 在 linux-6.18 上编译失败（三处内核 API 变更）：
+      #   del_timer_sync → timer_delete_sync（6.15 删旧名）
+      #   v4l2_fh_add()/v4l2_fh_del() 新增 struct file * 参数（6.18）
+      #   defined(timer_setup) 探测失效 → 走到已删除的 setup_timer()
+      # 补丁内容与上游 umlaeute/v4l2loopback master 的兼容层同源
+      - name: 给 feeds 打 linux-6.18 兼容补丁（v4l2loopback）
+        run: |
+          set -e
+          dst=feeds/packages/kernel/v4l2loopback/patches
+          test -f feeds/packages/kernel/v4l2loopback/Makefile || { echo "::error::v4l2loopback 包不在 feeds 期望路径"; exit 1; }
+          mkdir -p "$dst"
+          cp .github/feed-patches/v4l2loopback/*.patch "$dst"/
+          ls -l "$dst"
+          echo "✔ v4l2loopback feed 补丁已就位"
 
       - name: 安装 iStore 软件中心与首页包（树内 vendor）
         run: |

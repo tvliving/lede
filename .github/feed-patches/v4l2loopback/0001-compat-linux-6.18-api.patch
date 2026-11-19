@@ -1,0 +1,62 @@
+--- a/v4l2loopback.c
++++ b/v4l2loopback.c
+@@ -41,8 +41,22 @@
+ #define strscpy strlcpy
+ #endif
+ 
+-#if defined(timer_setup) && defined(from_timer)
++/* 6.15 起内核只剩新 timer API，defined(timer_setup) 的探测在新内核上失效 */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
+ #define HAVE_TIMER_SETUP
++#elif defined(timer_setup) && defined(from_timer)
++#define HAVE_TIMER_SETUP
++#endif
++
++/* 6.2 起 del_timer_sync() 更名为 timer_delete_sync()，6.18 已删除旧名 */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0)
++#define timer_delete_sync del_timer_sync
++#endif
++
++/* 6.18 起 v4l2_fh_add()/v4l2_fh_del() 增加 struct file * 参数 */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
++#define v4l2_fh_add(fh, filp) v4l2_fh_add(fh)
++#define v4l2_fh_del(fh, filp) v4l2_fh_del(fh)
+ #endif
+ 
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)
+@@ -1682,8 +1696,8 @@
+ static void buffer_written(struct v4l2_loopback_device *dev,
+ 			   struct v4l2l_buffer *buf)
+ {
+-	del_timer_sync(&dev->sustain_timer);
+-	del_timer_sync(&dev->timeout_timer);
++	timer_delete_sync(&dev->sustain_timer);
++	timer_delete_sync(&dev->timeout_timer);
+ 
+ 	spin_lock_bh(&dev->list_lock);
+ 	list_move_tail(&buf->list_head, &dev->outbufs_list);
+@@ -2232,7 +2246,7 @@
+ 	v4l2_fh_init(&opener->fh, video_devdata(file));
+ 	file->private_data = &opener->fh;
+ 
+-	v4l2_fh_add(&opener->fh);
++	v4l2_fh_add(&opener->fh, file);
+ 	dprintk("opened dev:%p with image:%p\n", dev, dev ? dev->image : NULL);
+ 	MARK();
+ 	return 0;
+@@ -2255,12 +2269,12 @@
+ 
+ 	atomic_dec(&dev->open_count);
+ 	if (dev->open_count.counter == 0) {
+-		del_timer_sync(&dev->sustain_timer);
+-		del_timer_sync(&dev->timeout_timer);
++		timer_delete_sync(&dev->sustain_timer);
++		timer_delete_sync(&dev->timeout_timer);
+ 	}
+ 	try_free_buffers(dev);
+ 
+-	v4l2_fh_del(&opener->fh);
++	v4l2_fh_del(&opener->fh, file);
+ 	v4l2_fh_exit(&opener->fh);
+ 
+ 	kfree(opener);
