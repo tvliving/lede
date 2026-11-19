@@ -95,6 +95,9 @@ jobs:
           {
             echo 'CONFIG_TARGET_mediatek=y'
             echo 'CONFIG_TARGET_mediatek_filogic=y'
+            # Target Devices 菜单 depends on TARGET_MULTI_PROFILE，
+            # 不开这一项时 CONFIG_TARGET_DEVICE_<conf>_DEVICE_<dev> 全部不可见，会被 defconfig 丢弃
+            echo 'CONFIG_TARGET_MULTI_PROFILE=y'
             cat devices-pack/"${{ matrix.slug }}"/config.fragment
           } > .config
           make defconfig
