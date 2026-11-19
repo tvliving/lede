@@ -1,0 +1,16 @@
+diff --git a/src/mod/common/timer.c b/src/mod/common/timer.c
+index a903b82..bd7511e 100644
+--- a/src/mod/common/timer.c
++++ b/src/mod/common/timer.c
+@@ -63,5 +63,11 @@ int jtimer_setup(void)
+  */
+ void jtimer_teardown(void)
+ {
++#if LINUX_VERSION_AT_LEAST(6, 2, 0, 9, 3)
++	/* Linux 6.15 起 del_timer_sync() 更名为 timer_delete_sync()，6.18 已移除旧名。
++	 * 与上游 NICMx/Jool master 同一处改法一致（其阈值 6.2 亦覆盖 RHEL 9.3 回移）。 */
++	timer_delete_sync(&timer);
++#else
+ 	del_timer_sync(&timer);
++#endif
+ }
