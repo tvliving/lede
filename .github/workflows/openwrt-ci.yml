@@ -64,6 +64,23 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+      #===============================================================================
+      # feeds 是第三方仓库（coolsnowwolf/packages），不能直接推；把树内补丁复制进
+      # 对应 feed 包的 patches/ 目录，由 quilt 在 prepare 阶段打上。
+      # 目前只有一条：jool 4.1.13 在 linux-6.18 上编译失败
+      #   rfc7915/6to4.c: 'struct flowi4' has no member named 'flowi4_tos'
+      # （6.18 删掉 flowi4_tos，改为 6bit 的 flowi4_dscp；上游 Jool master 已同法修好）
+      #===============================================================================
+      - name: 给 feeds 打 linux-6.18 兼容补丁（jool）
+        run: |
+          set -e
+          dst=feeds/packages/net/jool/patches
+          test -f feeds/packages/net/jool/Makefile || { echo "::error::jool 包不在 feeds 期望路径"; exit 1; }
+          mkdir -p "$dst"
+          cp .github/feed-patches/jool/*.patch "$dst"/
+          ls -l "$dst"
+          echo "✔ jool feed 补丁已就位"
+
       - name: 安装 iStore 软件中心与首页包（树内 vendor）
         run: |
           git clone -q --depth 1 --filter=blob:none --sparse \

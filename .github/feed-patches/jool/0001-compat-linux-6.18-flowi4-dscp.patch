@@ -1,0 +1,28 @@
+--- a/src/mod/common/rfc7915/6to4.c
++++ b/src/mod/common/rfc7915/6to4.c
+@@ -203,7 +203,13 @@
+ 	hdr6 = pkt_ip6_hdr(&state->in);
+ 
+ 	flow4->flowi4_mark = state->in.skb->mark;
++	/* Linux 6.18 起 struct flowi4 删除 flowi4_tos，改用 6bit 的 flowi4_dscp。
++	 * 与上游 NICMx/Jool master 的同一处改法一致。 */
++#if LINUX_VERSION_AT_LEAST(6, 18, 0, 9999, 0)
++	flow4->flowi4_dscp = inet_dsfield_to_dscp(xlat_tos(&state->jool.globals, hdr6));
++#else
+ 	flow4->flowi4_tos = xlat_tos(&state->jool.globals, hdr6);
++#endif
+ 	flow4->flowi4_scope = RT_SCOPE_UNIVERSE;
+ 	flow4->flowi4_proto = xlat_proto(hdr6);
+ 	/*
+@@ -645,7 +651,11 @@
+ 
+ 	hdr4->version = 4;
+ 	hdr4->ihl = 5;
++#if LINUX_VERSION_AT_LEAST(6, 18, 0, 9999, 0)
++	hdr4->tos = inet_dscp_to_dsfield(flow4->flowi4_dscp);
++#else
+ 	hdr4->tos = flow4->flowi4_tos;
++#endif
+ 	hdr4->tot_len = cpu_to_be16(state->out.skb->len);
+ 	generate_ipv4_id(state, hdr4, hdr_frag);
+ 	hdr4->frag_off = xlat_frag_off(hdr_frag, state);
