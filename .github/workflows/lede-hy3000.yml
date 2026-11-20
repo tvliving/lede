@@ -95,6 +95,8 @@ jobs:
             test -f "package/$p/Makefile" || { echo "::error::iStore 包缺失: $p"; exit 1; }
           done
           echo "✔ iStore 软件中心(luci-app-store) + 首页(luci-app-quickstart) 包就绪"
+          # 仪表盘：默认首页 + 守护进程开机自启（官方包缺这两处，否则刷进去看不到）
+          bash scripts/quickstart-fix.sh .
 
       - name: 生成配置（HY3000 + WiFi 驱动全量选入）
         working-directory: ${{ github.workspace }}/lede
@@ -260,3 +262,4 @@ jobs:
           done
           [[ "$ok" -eq 1 ]] || { echo ">>> ❌ 上传 5 次均失败"; exit 1; }
           echo ">>> 🎉 全部上传完成"
+

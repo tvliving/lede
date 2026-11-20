@@ -240,6 +240,8 @@ jobs:
             test -f "package/$p/Makefile" || { echo "::error::iStore 包缺失: $p"; exit 1; }
           done
           echo "✔ iStore 软件中心(luci-app-store) + 首页(luci-app-quickstart) 包就绪"
+          # 仪表盘：默认首页 + 守护进程开机自启（官方包缺这两处，否则刷进去看不到）
+          bash scripts/quickstart-fix.sh .
 
       #===============================================================================
       # 闪存验证（与 tvliving/Kwrt 同一套判定）：仅给 ≥128M 闪存（或 eMMC/SD 启动）
@@ -743,3 +745,4 @@ jobs:
             --title "LEDE ${{ matrix.group }} · $TAG" \
             --notes-file notes.md
           echo "已发布: $TAG"
+

@@ -3,23 +3,23 @@
 set -e
 cd "${1:-.}"
 
-echo "== 1/5 移除 argon =="
+echo "== 1/6 移除 argon =="
 rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config \
        package/luci-theme-argon package/luci-app-argon-config
 
-echo "== 2/5 引入 luci-theme-vantage =="
+echo "== 2/6 引入 luci-theme-vantage =="
 if [ ! -d package/luci-theme-vantage ]; then
   git clone --depth 1 https://github.com/anothaDev/luci-theme-vantage package/luci-theme-vantage
 fi
 
-echo "== 3/5 引入 iStore feed =="
+echo "== 3/6 引入 iStore feed =="
 grep -q '^src-git istore ' feeds.conf.default || \
   echo 'src-git istore https://github.com/linkease/istore.git' >> feeds.conf.default
 ./scripts/feeds update -a
 ./scripts/feeds install -a -p istore || true
 ./scripts/feeds install -a
 
-echo "== 4/5 默认主题替换 =="
+echo "== 4/6 默认主题替换 =="
 for f in feeds/luci/collections/luci/Makefile feeds/luci/collections/luci-light/Makefile; do
   [ -f "$f" ] && sed -i 's/luci-theme-argon/luci-theme-vantage/g; s/luci-theme-bootstrap/luci-theme-vantage/g' "$f" || true
 done
@@ -28,7 +28,7 @@ if [ -f feeds/luci/luci.mk ]; then
   sed -i 's/^# \$(foreach lang,\$(LUCI_LANGUAGES)/$(foreach lang,$(LUCI_LANGUAGES)/' feeds/luci/luci.mk || true
 fi
 
-echo "== 5/5 写入配置与默认主题 =="
+echo "== 5/6 写入配置与默认主题 =="
 cat >> .config <<'EOF'
 CONFIG_PACKAGE_luci-theme-vantage=y
 CONFIG_PACKAGE_luci-theme-argon=n
@@ -47,4 +47,21 @@ EOT
 exit 0
 EOF
 chmod +x files/etc/uci-defaults/99-default-theme
+
+echo "== 6/6 首页仪表盘（quickstart） =="
+# vendor 两件套（LuCI 前端 + 守护进程），再补官方包缺的两处：默认首页 title/order 与开机自启
+if [ ! -f package/luci-app-quickstart/Makefile ] || [ ! -f package/quickstart/Makefile ]; then
+  tmp="$(mktemp -d)"
+  git clone -q --depth 1 --filter=blob:none --sparse \
+    https://github.com/kiddin9/op-packages.git "$tmp/repo"
+  git -C "$tmp/repo" sparse-checkout set luci-app-quickstart quickstart
+  for p in luci-app-quickstart quickstart; do
+    rm -rf "package/feeds/istore/$p" "package/feeds/luci/$p" "package/$p"
+    cp -a "$tmp/repo/$p" "package/$p"
+  done
+  rm -rf "$tmp"
+fi
+bash "$(dirname "$0")/quickstart-fix.sh" .
+
 echo "[done] customize"
+
