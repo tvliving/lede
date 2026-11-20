@@ -2,8 +2,6 @@ name: 🌿 LEDE Cudy TR3000 512MB Build
 
 # 每周一、周四 07:00 (北京时间) 自动编译 = UTC 周日/周三 23:00
 on:
-  schedule:
-    - cron: '0 23 * * 0,3'
   workflow_dispatch:
     inputs:
       packages:

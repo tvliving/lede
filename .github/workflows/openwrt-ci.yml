@@ -8,8 +8,6 @@
 name: Lede-CI
 
 on:
-  schedule:
-    - cron: 0 20 * * *
   # 便于改完配置立刻验证，不用等到定时任务
   workflow_dispatch:
 
