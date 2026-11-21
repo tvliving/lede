@@ -103,20 +103,18 @@ exit 0
 EOF
 chmod +x files/etc/uci-defaults/98-lan-ip
 
-echo "== 6/6 首页仪表盘（quickstart） =="
-# vendor 两件套（LuCI 前端 + 守护进程），再补官方包缺的两处：默认首页 title/order 与开机自启
-if [ ! -f package/luci-app-quickstart/Makefile ] || [ ! -f package/quickstart/Makefile ]; then
-  tmp="$(mktemp -d)"
-  git clone -q --depth 1 --filter=blob:none --sparse \
-    https://github.com/kiddin9/op-packages.git "$tmp/repo"
-  git -C "$tmp/repo" sparse-checkout set luci-app-quickstart quickstart
-  for p in luci-app-quickstart quickstart; do
-    rm -rf "package/feeds/istore/$p" "package/feeds/luci/$p" "package/$p"
-    cp -a "$tmp/repo/$p" "package/$p"
-  done
-  rm -rf "$tmp"
-fi
-bash "$(dirname "$0")/quickstart-fix.sh" .
+echo "== 6/6 后台首页 =="
+# 曾经 vendor 过 kiddin9/op-packages 的 quickstart 当首页，实机验证不行：
+# 它的 home.htm 是独立的单页壳子，前端要靠 /admin/quickstart/* 的 XHR 拉数据，
+# 精简固件里后端守护进程拉不起来，XHR 一失败整页就只剩「正在加载首页...」，
+# 连带侧边栏都没有（vantage 的 rail 由页面自身渲染）。
+# 现在恢复标准 LuCI 布局：状态 -> 概览作为登录后首页，侧边栏和菜单都在。
+# 需要 quickstart 时把下面 5 行取消注释即可（脚本已兼容 apk 版本号问题）。
+# if [ ! -f package/luci-app-quickstart/Makefile ]; then
+#   bash "$(dirname "$0")/vendor-quickstart.sh" .
+# fi
+# bash "$(dirname "$0")/quickstart-fix.sh" .
+echo "[ok] 使用标准 LuCI 首页（状态-概览），不引入 quickstart"
 
 echo "== 7/7 品牌 + 默认展开左侧导航 =="
 # 7.1 品牌：把 VERSION_DIST 默认值固定成 Lede。它是 /etc/openwrt_release 的

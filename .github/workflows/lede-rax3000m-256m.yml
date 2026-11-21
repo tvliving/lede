@@ -191,7 +191,7 @@ jobs:
             echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
             # ---- iStore 软件中心 + 首页 ----
             echo "CONFIG_PACKAGE_luci-app-store=y"
-            echo "CONFIG_PACKAGE_luci-app-quickstart=y"
+            # 首页用标准 LuCI 概览；quickstart 在精简固件里后端起不来会白屏
             # ---- 默认主题 vantage；显式关 argon ----
             echo "CONFIG_PACKAGE_luci-theme-vantage=y"
             echo "# CONFIG_PACKAGE_luci-theme-argon is not set"
@@ -203,7 +203,7 @@ jobs:
           awk '/^config PACKAGE_luci-i18n-.+-zh-cn$/{print $2"=y"}' tmp/.config-package.in >> .config
           make defconfig
 
-          for s in luci-app-store luci-app-quickstart luci-i18n-base-zh-cn; do
+          for s in luci-app-store luci-i18n-base-zh-cn; do
             grep -qE "^CONFIG_PACKAGE_${s}=y$" .config \
               || { echo "::error::${s} 未生效（iStore 或中文包会缺失）"; exit 1; }
           done
@@ -304,7 +304,7 @@ jobs:
             echo "- 分区：ubi 由 114MB 扩到 **250.5MB**（0x580000 + 0xFA80000）"
             echo "- 启动：KERNEL_IN_UBI + sysupgrade-tar，沿用现有 256M U-Boot，不刷 preloader/fip"
             echo "- WiFi：mt76（kmod-mt7915e）+ factory eeprom 校准，2.4G/5G 双频"
-            echo "- 首页：luci-app-quickstart 仪表盘 + luci-app-store 软件中心 + 全量简体中文包"
+            echo "- 首页：标准 LuCI 概览 + luci-app-store 软件中心 + 全量简体中文包"
             echo "- 默认 IP：192.168.1.1 / 用户名 root / 密码：无"
             echo ""
             echo "> ⚠️ 必须是硬改 256M Flash 且 U-Boot 为 256M 大分区版，128M 的 U-Boot 会启动失败"

@@ -171,7 +171,7 @@ jobs:
           SUBS: '["filogic"]'
           FILES: '["device.txt"]'
           DEVICE: cudy_tr3000-512mb-v1
-          PACKAGES: ${{ inputs.packages || 'luci luci-compat luci-i18n-base-zh-cn luci-app-store luci-app-quickstart' }}
+          PACKAGES: ${{ inputs.packages || 'luci luci-compat luci-i18n-base-zh-cn luci-app-store' }}
           PROTECTED: luci luci-base luci-compat base-files
         run: |
           mkdir -p plan tmp
