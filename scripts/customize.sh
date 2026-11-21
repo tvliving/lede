@@ -115,4 +115,56 @@ if [ ! -f package/luci-app-quickstart/Makefile ] || [ ! -f package/quickstart/Ma
 fi
 bash "$(dirname "$0")/quickstart-fix.sh" .
 
+echo "== 7/7 品牌 + 默认展开左侧导航 =="
+# 7.1 品牌：把 VERSION_DIST 默认值固定成 Lede。它是 /etc/openwrt_release 的
+#     DISTRIB_ID 来源，make defconfig 会把 .config 里的临时值重置回默认值。
+if [ -f package/base-files/image-config.in ]; then
+  sed -i 's/^\(\s*\)default "LEDE"$/\1default "Lede"/' package/base-files/image-config.in
+  grep -q 'default "Lede"' package/base-files/image-config.in \
+    && echo "[ok] VERSION_DIST 默认值 = Lede" \
+    || echo "::warning::VERSION_DIST 默认值替换失败"
+fi
+
+# 7.2 vantage 左侧是图标栏（rail），默认收起、点「Expand navigation」才展开，
+#     状态存在 localStorage 的 vantage.rail。这里把默认值改成展开（pinned）；
+#     用户手动收起时写 'unpinned'，仍然用户偏好优先。
+VUT=package/luci-theme-vantage/ucode/template/themes/vantage/header.ut
+VMJ=package/luci-theme-vantage/htdocs/luci-static/resources/menu-vantage.js
+python3 - "$VUT" "$VMJ" <<'PY'
+import io
+import sys
+
+hut, mjs = sys.argv[1], sys.argv[2]
+
+
+def patch(path, pairs):
+    try:
+        s = io.open(path, encoding="utf-8").read()
+    except IOError:
+        print("::warning::未找到 %s" % path)
+        return
+    hit = 0
+    for a, b in pairs:
+        if a in s:
+            s = s.replace(a, b)
+            hit += 1
+    io.open(path, "w", encoding="utf-8", newline="\n").write(s)
+    print("[ok] %s 替换 %d 处" % (path, hit))
+
+
+patch(hut, [
+    ("localStorage.getItem('vantage.rail') || ''",
+     "localStorage.getItem('vantage.rail') || 'pinned'"),
+    ("if (rail === 'pinned') r.setAttribute('data-rail', 'pinned');",
+     "if (rail !== 'unpinned') r.setAttribute('data-rail', 'pinned');"),
+])
+patch(mjs, [
+    ("storageSet(RAIL_KEY, pinned ? null : 'pinned');",
+     "storageSet(RAIL_KEY, pinned ? 'unpinned' : 'pinned');"),
+])
+PY
+
+# board.d 覆盖脚本需要可执行位（apply-pack 用 copyfile 复制，不带权限）
+chmod 755 files/etc/board.d/* 2>/dev/null || true
+
 echo "[done] customize"
