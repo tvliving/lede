@@ -106,6 +106,9 @@ jobs:
           echo "✔ iStore 软件中心(luci-app-store) + 首页(luci-app-quickstart) 包就绪"
           # 补默认首页 title/order（缺了仪表盘不会成为登录默认页）与守护进程自启
           bash scripts/quickstart-fix.sh .
+          # iStore 界面中文化：store.lua 的 vue_lang() 回退按 LuCI 语言映射（zh* -> zh-cn）
+          fx=$(find "$GITHUB_WORKSPACE" -maxdepth 3 -name fix-istore-lang.sh 2>/dev/null | head -1)
+          if [ -n "$fx" ]; then bash "$fx" .; else echo "::warning::未找到 fix-istore-lang.sh，iStore 语言未处理"; fi
 
       - name: 生成配置（BT-R320 + WiFi 驱动全量选入）
         working-directory: ${{ github.workspace }}/lede

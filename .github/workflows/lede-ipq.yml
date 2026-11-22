@@ -240,6 +240,9 @@ jobs:
           echo "✔ iStore 软件中心(luci-app-store) + 首页(luci-app-quickstart) 包就绪"
           # 仪表盘：默认首页 + 守护进程开机自启（官方包缺这两处，否则刷进去看不到）
           bash scripts/quickstart-fix.sh .
+          # iStore 界面中文化：store.lua 的 vue_lang() 回退按 LuCI 语言映射（zh* -> zh-cn）
+          fx=$(find "$GITHUB_WORKSPACE" -maxdepth 3 -name fix-istore-lang.sh 2>/dev/null | head -1)
+          if [ -n "$fx" ]; then bash "$fx" .; else echo "::warning::未找到 fix-istore-lang.sh，iStore 语言未处理"; fi
 
       #===============================================================================
       # 闪存验证（与 tvliving/Kwrt 同一套判定）：仅给 ≥128M 闪存（或 eMMC/SD 启动）
