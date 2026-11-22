@@ -149,7 +149,7 @@ jobs:
                   miss.append(d); continue
               if 'luci-app-store' in m.group(1):
                   done.append(d); continue
-              s = s[:m.start(2)] + '  DEVICE_PACKAGES += luci-app-store luci-app-quickstart\n' + s[m.start(2):]
+              s = s[:m.start(2)] + '  DEVICE_PACKAGES += luci-app-store\n' + s[m.start(2):]
               done.append(d)
           open(path, 'w', encoding='utf-8', newline='\n').write(s)
           if miss:

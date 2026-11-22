@@ -131,7 +131,7 @@ jobs:
             echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
             # ---- iStore 软件中心 + 首页（eMMC ≥128M，全量安装）----
             echo "CONFIG_PACKAGE_luci-app-store=y"
-            echo "CONFIG_PACKAGE_luci-app-quickstart=y"
+            # 首页用标准 LuCI 概览；quickstart(NetworkGuide) 上游无中文语言包，撤掉
             # ---- 默认主题 vantage；显式关 argon（即使 PACKAGES 传了也不装）----
             echo "CONFIG_PACKAGE_luci-theme-vantage=y"
             echo "# CONFIG_PACKAGE_luci-theme-argon is not set"
@@ -145,7 +145,7 @@ jobs:
 
           # iStore / 中文包断言：这两个都曾因符号写错被 kconfig 静默忽略，
           # 构建全绿但刷进去没有商店、没有中文，必须在这里卡住
-          for s in luci-app-store luci-app-quickstart luci-i18n-base-zh-cn; do
+          for s in luci-app-store luci-i18n-base-zh-cn; do
             grep -qE "^CONFIG_PACKAGE_${s}=y$" .config \
               || { echo "::error::${s} 未生效（iStore 或中文包会缺失）"; exit 1; }
           done
