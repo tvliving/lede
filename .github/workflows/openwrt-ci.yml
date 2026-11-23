@@ -79,10 +79,11 @@ jobs:
           ls -l "$dst"
           echo "✔ jool feed 补丁已就位"
 
-      # v4l2loopback 0.13.2 在 linux-6.18 上编译失败（三处内核 API 变更）：
+      # v4l2loopback 0.13.2 在 linux-6.18 上编译失败（四处内核 API 变更）：
       #   del_timer_sync → timer_delete_sync（6.15 删旧名）
       #   v4l2_fh_add()/v4l2_fh_del() 新增 struct file * 参数（6.18）
       #   defined(timer_setup) 探测失效 → 走到已删除的 setup_timer()
+      #   from_timer() 随 timer_list.data 一起被删除（6.15）→ 改用 container_of()
       # 补丁内容与上游 umlaeute/v4l2loopback master 的兼容层同源
       - name: 给 feeds 打 linux-6.18 兼容补丁（v4l2loopback）
         run: |

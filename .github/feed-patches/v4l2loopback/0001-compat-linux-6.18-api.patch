@@ -60,3 +60,23 @@
  	v4l2_fh_exit(&opener->fh);
  
  	kfree(opener);
+@@ -2552,7 +2566,8 @@
+ #ifdef HAVE_TIMER_SETUP
+ static void sustain_timer_clb(struct timer_list *t)
+ {
+-	struct v4l2_loopback_device *dev = from_timer(dev, t, sustain_timer);
++	struct v4l2_loopback_device *dev =
++		container_of(t, struct v4l2_loopback_device, sustain_timer);
+ #else
+ static void sustain_timer_clb(unsigned long nr)
+ {
+@@ -2577,7 +2592,8 @@
+ #ifdef HAVE_TIMER_SETUP
+ static void timeout_timer_clb(struct timer_list *t)
+ {
+-	struct v4l2_loopback_device *dev = from_timer(dev, t, timeout_timer);
++	struct v4l2_loopback_device *dev =
++		container_of(t, struct v4l2_loopback_device, timeout_timer);
+ #else
+ static void timeout_timer_clb(unsigned long nr)
+ {
