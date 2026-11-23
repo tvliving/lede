@@ -1,0 +1,13 @@
+diff --git a/kernel-module/xt_RTPENGINE.c b/kernel-module/xt_RTPENGINE.c
+--- a/kernel-module/xt_RTPENGINE.c
++++ b/kernel-module/xt_RTPENGINE.c
+@@ -46,5 +46,9 @@
+ MODULE_LICENSE("GPL");
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,18,0)
++MODULE_IMPORT_NS("CRYPTO_INTERNAL");
++#else
+ MODULE_IMPORT_NS(CRYPTO_INTERNAL);
++#endif
+ #endif
+ MODULE_ALIAS("ipt_RTPENGINE");
