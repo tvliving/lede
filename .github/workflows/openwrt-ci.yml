@@ -95,6 +95,23 @@ jobs:
           ls -l "$dst"
           echo "✔ v4l2loopback feed 补丁已就位"
 
+      # rtpengine（telephony feed，mr11.5.1.18）的内核模块 Makefile 仍在用 EXTRA_CFLAGS 传
+      # -D__RE_EXTERNAL。Linux 6.18 的 scripts/Makefile.lib 删掉了
+      #   ccflags-y += $(EXTRA_CFLAGS)
+      # 这层向后兼容，变量被静默忽略 → xt_RTPENGINE.c 走 #ifndef __RE_EXTERNAL 分支，
+      # 去内核树找 linux/netfilter/xt_RTPENGINE.h（该头只在包内 kernel-module/ 下），
+      # 报 fatal error: linux/netfilter/xt_RTPENGINE.h: No such file or directory。
+      # 改回 kbuild 现行变量名 ccflags-y（不给 gcc 加任何抑制参数）。
+      - name: 给 feeds 打 linux-6.18 兼容补丁（rtpengine 改用 ccflags-y）
+        run: |
+          set -e
+          dst=feeds/telephony/net/rtpengine/patches
+          test -f feeds/telephony/net/rtpengine/Makefile || { echo "::error::rtpengine 包不在 feeds 期望路径"; exit 1; }
+          mkdir -p "$dst"
+          cp .github/feed-patches/rtpengine/*.patch "$dst"/
+          ls -l "$dst"
+          echo "✔ rtpengine feed 补丁已就位"
+
       - name: 安装 iStore 软件中心与首页包（树内 vendor）
         run: |
           git clone -q --depth 1 --filter=blob:none --sparse \
