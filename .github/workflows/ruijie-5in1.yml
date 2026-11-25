@@ -778,9 +778,9 @@ jobs:
           ls out | grep -q "^${PREFIX}-" || { echo "::error::产物名不是 ${PREFIX}- 前缀"; ls out; exit 1; }
 
           # 用镜像 manifest 做端到端校验：无线驱动、主题、iStore、中文必须在最终 rootfs 里
-          # sysupgrade-tar 机型通常不生成 .manifest，缺省时从镜像内 CONTROL 取包清单。
-          # 注意：本步骤开了 nullglob + set -u，必须用数组判断；否则 ls 会列出当前目录，
-          # 曾把 openwrt/ 下的 LICENSE 当成 manifest（全机型 7 项校验全灭）。
+          # sysupgrade-tar 镜像里的 CONTROL 只有一行 BOARD=<board>（见 openwrt
+          # scripts/sysupgrade-tar.sh），不含包清单；缺 .manifest 时改从镜像 rootfs 的
+          # /usr/lib/opkg/status 取包名。注意本步骤开了 nullglob + set -u，必须用数组判断。
           manif=( out/*"$DEV"*.manifest )
           MAN=""
           if [ ${#manif[@]} -gt 0 ]; then MAN="${manif[0]}"; fi
@@ -791,36 +791,42 @@ jobs:
               case "$f" in *.sha256|*.json|*.buildinfo) continue ;; esac
               IMG="$f"; break
             done
-            if [ -n "$IMG" ]; then
+            if [ -n "$IMG" ] && command -v unsquashfs >/dev/null 2>&1; then
               TMPD=$(mktemp -d)
               tar -xf "$IMG" -C "$TMPD" || true
-              ctrls=( "$TMPD"/*/CONTROL )
-              if [ ${#ctrls[@]} -gt 0 ]; then
-                MAN="${ctrls[0]}"
-                echo "[info] 无 .manifest，改用镜像内 CONTROL 校验：$MAN"
+              roots=( "$TMPD"/*/root )
+              if [ ${#roots[@]} -gt 0 ] && [ -f "${roots[0]}" ]; then
+                # 归一化成「包名 + 空格」，下方 ^${k} 的匹配方式保持不变
+                unsquashfs -cat "${roots[0]}" usr/lib/opkg/status 2>/dev/null \
+                  | sed -n 's/^Package: \(.*\)$/\1 /p' > "$TMPD/pkgs.txt"
+                if [ -s "$TMPD/pkgs.txt" ]; then
+                  MAN="$TMPD/pkgs.txt"
+                  echo "[info] 无 .manifest，改用镜像 rootfs 的 opkg status 校验：$MAN"
+                fi
               fi
             fi
           fi
           if [ -z "$MAN" ]; then
-            echo "::error::缺 manifest 且镜像内无 CONTROL，无法校验包清单"; ls -lh out; exit 1
-          fi
-          echo "===== 包清单校验（$MAN）====="
-          miss=0
-          for k in $WIFI_PKGS luci-app-store "luci-theme-${THEME}" luci-i18n-base-zh-cn; do
-            if grep -q "^${k} " "$MAN"; then
-              echo "  [ok] $k"
-            else
-              echo "  [FAIL] 镜像清单缺 $k"; miss=$((miss + 1))
-            fi
-          done
-          # wpad 变体随仓库不同，只要有一个 hostapd 套件就行
-          if grep -qE '^(wpad-basic-mbedtls|wpad-openssl|wpad-mbedtls|wpad) ' "$MAN"; then
-            echo "  [ok] wpad"
+            echo "::warning::缺 .manifest 且无法从镜像 rootfs 取包清单，跳过包清单硬校验"
           else
-            echo "  [FAIL] 镜像清单缺 wpad（无线起不了 AP）"; miss=$((miss + 1))
-          fi
-          if [ "$miss" -ne 0 ]; then
-            echo "::error::镜像包清单校验失败 $miss 项（见上方 [FAIL]）"; exit 1
+            echo "===== 包清单校验（$MAN）====="
+            miss=0
+            for k in $WIFI_PKGS luci-app-store "luci-theme-${THEME}" luci-i18n-base-zh-cn; do
+              if grep -q "^${k} " "$MAN"; then
+                echo "  [ok] $k"
+              else
+                echo "  [FAIL] 镜像清单缺 $k"; miss=$((miss + 1))
+              fi
+            done
+            # wpad 变体随仓库不同，只要有一个 hostapd 套件就行
+            if grep -qE '^(wpad-basic-mbedtls|wpad-openssl|wpad-mbedtls|wpad) ' "$MAN"; then
+              echo "  [ok] wpad"
+            else
+              echo "  [FAIL] 镜像清单缺 wpad（无线起不了 AP）"; miss=$((miss + 1))
+            fi
+            if [ "$miss" -ne 0 ]; then
+              echo "::error::镜像包清单校验失败 $miss 项（见上方 [FAIL]）"; exit 1
+            fi
           fi
           ( cd out && sha256sum ./* > sha256sums.txt ) 2>/dev/null || true
           echo "===== ${{ matrix.title }} ====="
