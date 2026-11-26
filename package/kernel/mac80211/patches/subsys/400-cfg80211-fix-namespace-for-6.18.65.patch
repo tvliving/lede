@@ -1,0 +1,25 @@
+--- a/net/wireless/sysfs.c
++++ b/net/wireless/sysfs.c
+@@ -154,12 +154,22 @@
+ #define WIPHY_PM_OPS NULL
+ #endif
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 65)
++/* Linux 6.18.65 stable changed class->namespace to return const struct ns_common * */
++static const struct ns_common *wiphy_namespace(const struct device *d)
++{
++	struct wiphy *wiphy = container_of(d, struct wiphy, dev);
++
++	return to_ns_common(wiphy_net(wiphy));
++}
++#else
+ static const void *wiphy_namespace(const struct device *d)
+ {
+ 	struct wiphy *wiphy = container_of(d, struct wiphy, dev);
+ 
+ 	return wiphy_net(wiphy);
+ }
++#endif
+ 
+ struct class ieee80211_class = {
+ 	.name = "ieee80211",
