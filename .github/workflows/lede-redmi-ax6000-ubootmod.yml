@@ -367,6 +367,57 @@ jobs:
             echo "# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_${s} is not set" >> .config
           done
           make defconfig
+
+          # 官方 25.12 原生树的 defconfig 在 TARGET_MULTI_PROFILE + 单设备组合下
+          # 会把 luci-app-passwall 主包连同它的 +依赖整条链撤成 not set
+          # （2026-11-28 首轮日志证实：主包 not set，但 INCLUDE 子项仍为 y），
+          # 所以这里在最后一次 defconfig 之后强制写回主包 + 全部运行时依赖，
+          # 之后不再跑 defconfig 覆盖。所有符号均已确认在 25.12 feeds 里存在。
+          python3 - <<'PY'
+          import io
+          import re
+          need = [
+              'luci-app-passwall',
+              'coreutils', 'coreutils-base64', 'coreutils-nohup', 'coreutils-timeout', 'curl',
+              'chinadns-ng', 'dns2socks', 'ip-full', 'libuci-lua', 'lua',
+              'luci-compat', 'luci-lib-jsonc', 'microsocks', 'resolveip', 'tcping',
+              'lyaml', 'unzip', 'ipt2socks',
+              'kmod-nft-socket', 'kmod-nft-tproxy', 'kmod-nft-nat',
+              'kmod-nf-reject', 'kmod-nf-reject6',
+              'xray-core',
+          ]
+          p = '.config'
+          lines = io.open(p, encoding='utf-8', errors='surrogateescape').readlines()
+          seen = set()
+          out = []
+          for line in lines:
+              m = re.match(r'^#? ?CONFIG_PACKAGE_([A-Za-z0-9_+.-]+) (is not set|=.*)$', line.strip())
+              if m and m.group(1) in need:
+                  if m.group(1) not in seen:
+                      out.append('CONFIG_PACKAGE_%s=y\n' % m.group(1))
+                      seen.add(m.group(1))
+                  continue
+              m = re.match(r'^CONFIG_PACKAGE_([A-Za-z0-9_+.-]+)=', line)
+              if m and m.group(1) in need:
+                  seen.add(m.group(1))
+              out.append(line)
+          for name in need:
+              if name not in seen:
+                  out.append('CONFIG_PACKAGE_%s=y\n' % name)
+          # 只保留 Xray 一个代理核心；SingBox / Simple-Obfs 等 Go 大件与重依赖一并收紧，
+          # 避免 host 侧 Go 工具链拖挂 make world。
+          off = ('SingBox', 'Simple_Obfs', 'Haproxy', 'Hysteria', 'NaiveProxy',
+                 'Shadow_TLS', 'SmartDNS', 'V2ray_Geodata', 'V2ray_Geoview',
+                 'V2ray_Plugin', 'Xray_Plugin', 'Shadowsocks_Rust_Client',
+                 'Shadowsocks_Rust_Server')
+          for name in off:
+              key = 'luci-app-passwall_INCLUDE_' + name
+              out = [l for l in out if not l.startswith('CONFIG_PACKAGE_%s=' % key)]
+              out.append('# CONFIG_PACKAGE_%s is not set\n' % key)
+          io.open(p, 'w', encoding='utf-8', errors='surrogateescape').writelines(out)
+          print('>>> 已强制写回 PassWall 主包 + %d 个运行时依赖' % len(need))
+          PY
+
           sed -i '/^CONFIG_VERSION_DIST=/d' .config
           echo "CONFIG_VERSION_DIST=\"$DIST\"" >> .config
 
