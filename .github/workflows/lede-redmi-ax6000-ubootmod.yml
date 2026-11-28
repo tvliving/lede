@@ -1,0 +1,930 @@
+# Lede · 小米/红米 Redmi Router AX6000（ubootmod 大分区，ImmortalWrt 官方原生支持）
+#
+# 从 ImmortalWrt 官方 25.12 移植，workflow 不自己写 DTS / 设备块 / U-Boot 补丁：
+#  1) 克隆 immortalwrt/immortalwrt `openwrt-25.12`（官方已含
+#     mt7986a-xiaomi-redmi-router-ax6000-ubootmod.dts、filogic.mk 的
+#     Device/xiaomi_redmi-router-ax6000-ubootmod、uboot-mediatek 的
+#     U-Boot/mt7986_xiaomi_redmi-router-ax6000）
+#  2) 大分区来自官方 ubootmod 布局：ubi 分区 0x580000 + 0x7a80000（约 122MB）
+#  3) 叠加本仓库定制：vantage 主题 + iStore 市场 + 全量简体中文 + PassWall
+#  4) PassWall 预置 50 条访问控制（源 10.0.0.2-10.0.0.51，模式=代理）
+#
+# 产物：sysupgrade.itb + bl31-uboot.fip + preloader.bin
+
+name: Lede 红米 AX6000 ubootmod 大分区编译（ImmortalWrt 官方支持）
+
+on:
+  schedule:
+    # 北京时间每周一 08:30 = UTC 00:30
+    - cron: '30 0 * * 1'
+  workflow_dispatch:
+    inputs:
+      make_release:
+        description: '编译完成后发布 Release'
+        type: boolean
+        default: true
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/lede-redmi-ax6000-ubootmod.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: redmi-ax6000-ubootmod
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Shanghai
+  DIST: Lede
+  PREFIX: lede
+  VERSION: '25.12'
+  THEME: vantage
+  DEVICE: xiaomi_redmi-router-ax6000-ubootmod
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 1500M
+  CCACHE_COMPRESS: 'true'
+  CCACHE_NOHASHDIR: 'true'
+
+jobs:
+  build:
+    name: 🏗️ 红米 AX6000 ubootmod 大分区（官方 25.12）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - name: 检出构建仓库
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 释放磁盘空间并加大 swap
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache /usr/local/share/boost \
+                      /usr/local/lib/node_modules /usr/lib/jvm \
+                      /usr/share/swift /usr/share/miniconda /usr/share/rust \
+                      /usr/share/kotlinc /usr/share/gradle-* /opt/az \
+                      /opt/microsoft /usr/local/aws-cli /usr/local/.ghcup \
+                      /etc/mysql /etc/php /usr/local/go /opt/pipx 2>/dev/null || true
+          sudo systemctl stop docker docker.socket containerd 2>/dev/null || true
+          sudo rm -rf /var/lib/docker /var/lib/containerd 2>/dev/null || true
+          sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          sudo swapoff -a 2>/dev/null || true
+          sudo rm -f /swapfile 2>/dev/null || true
+          if sudo fallocate -l 4G /swapfile 2>/dev/null; then
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile >/dev/null 2>&1 && sudo swapon /swapfile
+          fi
+          df -h / | tail -1
+          free -h
+
+      - name: 安装编译依赖
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get update -qq -o Acquire::Retries=3 || sudo -E apt-get update -qq
+          sudo -E apt-get install -y --no-install-recommends \
+            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses5-dev libssl-dev libelf-dev python3-setuptools \
+            rsync swig unzip zlib1g-dev file wget dwarves llvm python3-pyelftools \
+            libpython3-dev aria2 jq ccache rename device-tree-compiler \
+            libgmp3-dev libmpc-dev pahole libdw-dev zstd \
+            autoconf automake autopoint binutils bzip2 cpio curl genisoimage \
+            gperf haveged help2man intltool libc6-dev-i386 libfuse-dev \
+            libglib2.0-dev libltdl-dev libmpfr-dev libncurses-dev \
+            libncursesw5-dev libreadline-dev libtool libxslt1-dev lrzsz \
+            ninja-build p7zip p7zip-full patch pkgconf python3-ply \
+            python3-docutils qemu-utils scons squashfs-tools subversion texinfo \
+            uglifyjs upx-ucl vim xxd
+          sudo timedatectl set-timezone "Asia/Shanghai"
+          ccache --version | head -1 || true
+
+      - name: 准备源码树（ImmortalWrt 官方 openwrt-25.12）
+        run: |
+          rm -rf openwrt .owrt-src
+          for i in 1 2 3; do
+            git clone -q --depth 1 -b openwrt-25.12 \
+              https://github.com/immortalwrt/immortalwrt .owrt-src && break
+            echo "::warning::clone 第 $i 次失败，重试"
+            rm -rf .owrt-src
+            sleep 10
+          done
+          [ -d .owrt-src ] || { echo "::error::ImmortalWrt 源码克隆失败"; exit 1; }
+          mv .owrt-src openwrt
+          cd openwrt
+          echo ">>> 源码树：$(git rev-parse --short HEAD)（$(git log -1 --format=%cd --date=short)）"
+          # 官方原生支持校验：DTS / 设备块 / U-Boot 变体必须都在，缺一说明分支选错
+          test -f target/linux/mediatek/dts/mt7986a-xiaomi-redmi-router-ax6000-ubootmod.dts \
+            || { echo "::error::官方缺红米 AX6000 ubootmod DTS"; exit 1; }
+          grep -q 'define Device/xiaomi_redmi-router-ax6000-ubootmod' target/linux/mediatek/image/filogic.mk \
+            || { echo "::error::官方 filogic.mk 缺 Device/xiaomi_redmi-router-ax6000-ubootmod"; exit 1; }
+          grep -q 'U-Boot/mt7986_xiaomi_redmi-router-ax6000' package/boot/uboot-mediatek/Makefile \
+            || { echo "::error::官方 uboot-mediatek 缺红米 AX6000 U-Boot 变体"; exit 1; }
+          echo "✔ 官方设备支持已就位（ubootmod 大分区 DTS + 设备块 + U-Boot）"
+
+      - name: 修补上游 libsepol / libselinux 3.9 的 InstallDev（公共头与 .pc）
+        run: |
+          set -euo pipefail
+          cd openwrt
+          python3 - <<'PY'
+          import io
+          import os
+          import re
+
+          # ImmortalWrt 25.12 的 libsepol / libselinux 都是 3.9，InstallDev 统一从
+          # $(PKG_INSTALL_DIR)/usr/include/* 与 usr/lib/pkgconfig/<name>.pc 取文件。
+          # 但 3.10 的 make install 并不稳定地把公共头落地：
+          #   libsepol 公共头在 include/sepol（src/*.h 全是私有头，没有 sepol.h）
+          #   libselinux 公共头在 include/selinux
+          #   .pc 由 make all 生成在 src/<name>.pc
+          # 只修 libsepol 会先报 sepol/sepol.h: No such file or directory，
+          # 修完后 libselinux 的 InstallDev 又以同样方式失败。两个包一起修：
+          # 原 ipkg-install 拷贝保留但吞掉缺失错误，再无条件从构建目录补全套公共头/.pc。
+          def fix(path, name, hdr):
+              s = io.open(path, encoding='utf-8').read()
+              old_hdr = '\t$(CP) $(PKG_INSTALL_DIR)/usr/include/* $(1)/usr/include/'
+              new_hdr = ('\t$(CP) $(PKG_INSTALL_DIR)/usr/include/* $(1)/usr/include/ 2>/dev/null || true\n'
+                         '\t$(CP) $(PKG_BUILD_DIR)/%s $(1)/usr/include/' % hdr)
+              old_pc = ('\t$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/lib/pkgconfig/%s.pc '
+                        '$(1)/usr/lib/pkgconfig/') % name
+              new_pc = ('\t$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/lib/pkgconfig/%s.pc '
+                        '$(1)/usr/lib/pkgconfig/ 2>/dev/null || true\n'
+                        '\t$(INSTALL_DATA) $(PKG_BUILD_DIR)/src/%s.pc '
+                        '$(1)/usr/lib/pkgconfig/') % (name, name)
+              n = 0
+              if old_hdr in s:
+                  s = s.replace(old_hdr, new_hdr, 1)
+                  n += 1
+              if old_pc in s:
+                  s = s.replace(old_pc, new_pc, 1)
+                  n += 1
+              io.open(path, 'w', encoding='utf-8').write(s)
+              print('>>> %s: patched %d places (headers + .pc)' % (name, n))
+              return n
+
+          a = fix('package/libs/libsepol/Makefile', 'libsepol', 'include/sepol')
+          b = fix('package/libs/libselinux/Makefile', 'libselinux', 'include/selinux')
+          # libselinux 3.10 的 utils/Makefile 用 `-lsepol` 链接 sefcontext_compile，
+          # 但 OpenWrt master 的 TARGET_LDFLAGS 不含 -L$(STAGING_DIR)/usr/lib，
+          # 现存的那个 -L 又出现在 -lsepol 之后，链接器从左到右解析时找不到 libsepol。
+          p = 'package/libs/libselinux/Makefile'
+          s = io.open(p, encoding='utf-8').read()
+          line = 'TARGET_LDFLAGS += -L$(STAGING_DIR)/usr/lib'
+          if line not in s and 'define Build/Compile' in s:
+              s = s.replace('define Build/Compile', line + '\n\n' + 'define Build/Compile', 1)
+              io.open(p, 'w', encoding='utf-8').write(s)
+              print('>>> libselinux: added TARGET_LDFLAGS -L staging/usr/lib')
+          # 3.10 的 make install 落库路径不稳，InstallDev 再从构建目录兜底拷静态库
+          p = 'package/libs/libsepol/Makefile'
+          s = io.open(p, encoding='utf-8').read()
+          needle = '\t$(CP) $(PKG_INSTALL_DIR)/usr/lib/* $(1)/usr/lib/'
+          add = (needle + ' 2>/dev/null || true\n'
+                 '\t$(CP) $(PKG_BUILD_DIR)/src/libsepol.a $(1)/usr/lib/ 2>/dev/null || true')
+          if needle in s and add not in s:
+              s = s.replace(needle, add, 1)
+              io.open(p, 'w', encoding='utf-8').write(s)
+              print('>>> libsepol: staged libsepol.a fallback from build dir')
+          # mtd-utils configure 探测到 staging 的 libselinux.pc 会自动打开
+          # SELinux 支持并链接 -lselinux；但 3.9/3.10 的 InstallDev 不落
+          # libselinux.so，mkfs.ubifs 链接报 cannot find -lselinux。本固件
+          # 不需要 SELinux xattr，显式关闭这个可选探测。
+          p = 'package/utils/mtd-utils/Makefile'
+          s = io.open(p, encoding='utf-8').read()
+          anchor = 'include $(INCLUDE_DIR)/package.mk'
+          line = 'CONFIGURE_ARGS += --without-selinux'
+          if line not in s and anchor in s:
+              s = s.replace(anchor, anchor + '\n' + line, 1)
+              io.open(p, 'w', encoding='utf-8').write(s)
+              print('>>> mtd-utils: --without-selinux (libselinux.pc auto-probe)')
+          # libbpf 1.6.2：Build/Install 必须定义在 include package.mk **之后**（package.mk 里是
+          # `Build/Install=$(if $(PKG_INSTALL),$(call Build/Install/Default,))` 无条件赋值）。
+          # 但实测它的 `make install` 在交叉环境下可能一个文件都不落地（ipkg-install 全空，
+          # 连 usr/include/bpf/*.h 都没有，InstallDev 直接 cp cannot stat）。
+          # 因此这里不再依赖上游 install 目标：先 make all，再自己把产物拷进 PKG_INSTALL_DIR。
+          p = 'package/libs/libbpf/Makefile'
+          if os.path.exists(p):
+              s = io.open(p, encoding='utf-8').read()
+              block = (
+                  'define Build/Install\n'
+                  '\t+$(MAKE) $(PKG_JOBS) -C $(PKG_BUILD_DIR)/$(MAKE_PATH) $(TARGET_CONFIGURE_OPTS) $(MAKE_FLAGS) all\n'
+                  '\t$(INSTALL_DIR) $(PKG_INSTALL_DIR)/usr/lib $(PKG_INSTALL_DIR)/usr/include/bpf $(PKG_INSTALL_DIR)/usr/lib/pkgconfig\n'
+                  '\t-$(CP) $(PKG_BUILD_DIR)/$(MAKE_PATH)/libbpf.so* $(PKG_INSTALL_DIR)/usr/lib/\n'
+                  '\t-$(CP) $(PKG_BUILD_DIR)/$(MAKE_PATH)/libbpf.a $(PKG_INSTALL_DIR)/usr/lib/\n'
+                  '\t-$(CP) $(PKG_BUILD_DIR)/$(MAKE_PATH)/*.h $(PKG_INSTALL_DIR)/usr/include/bpf/\n'
+                  '\t-$(CP) $(PKG_BUILD_DIR)/$(MAKE_PATH)/libbpf.pc $(PKG_INSTALL_DIR)/usr/lib/pkgconfig/\n'
+                  '\t@ls $(PKG_INSTALL_DIR)/usr/lib/libbpf.so* >/dev/null 2>&1 || { \\\n'
+                  '\t\techo "ERROR: libbpf 没编出 .so，构建目录内容如下："; \\\n'
+                  '\t\tls -la $(PKG_BUILD_DIR)/$(MAKE_PATH) | head -30; exit 1; }\n'
+                  'endef\n')
+              anchor = 'include $(INCLUDE_DIR)/nls.mk\n'
+              if 'define Build/Install\n' in s:
+                  s = re.sub(r'define Build/Install\n(?:\t.*\n)+endef\n', '', s, count=1)
+              if anchor in s:
+                  s = s.replace(anchor, anchor + '\n' + block, 1)
+              # InstallDev 也从构建目录兜底（上游从 ipkg-install 拷，空目录必炸）
+              s = s.replace(
+                  '\t$(CP) $(PKG_INSTALL_DIR)/usr/include/bpf/*.h $(1)/usr/include/bpf/',
+                  '\t$(CP) $(PKG_INSTALL_DIR)/usr/include/bpf/*.h $(1)/usr/include/bpf/ 2>/dev/null \\\n'
+                  '\t\t|| $(CP) $(PKG_BUILD_DIR)/$(MAKE_PATH)/*.h $(1)/usr/include/bpf/')
+              s = s.replace(
+                  '\t$(CP) $(PKG_INSTALL_DIR)/usr/lib/libbpf.{a,so*} \\\n\t\t$(1)/usr/lib/',
+                  '\t$(CP) $(PKG_INSTALL_DIR)/usr/lib/libbpf.{a,so*} \\\n\t\t$(1)/usr/lib/ 2>/dev/null \\\n'
+                  '\t\t|| $(CP) $(PKG_BUILD_DIR)/$(MAKE_PATH)/libbpf.{a,so*} $(1)/usr/lib/')
+              io.open(p, 'w', encoding='utf-8').write(s)
+              print('>>> libbpf: 自建 Build/Install（不依赖上游 install）+ InstallDev 兜底')
+          if a != 2 or b != 2:
+              raise SystemExit('::error::libsepol/libselinux InstallDev patch incomplete')
+          PY
+          grep -q 'PKG_BUILD_DIR)/include/sepol' package/libs/libsepol/Makefile \
+            || { echo "::error::libsepol 公共头补丁未生效"; exit 1; }
+          grep -q 'PKG_BUILD_DIR)/src/libselinux.pc' package/libs/libselinux/Makefile \
+            || { echo "::error::libselinux .pc 补丁未生效"; exit 1; }
+          grep -q 'CONFIGURE_ARGS += --without-selinux' package/utils/mtd-utils/Makefile \
+            || { echo "::error::mtd-utils --without-selinux 补丁未生效"; exit 1; }
+
+      - name: 恢复 ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-redmi-ax6000-ubootmod-${{ github.run_id }}
+          restore-keys: |
+            ccache-redmi-ax6000-ubootmod-
+
+      - name: 生成基础 .config（红米 AX6000 ubootmod + PassWall + vantage + iStore + 强制中文）
+        run: |
+          set -euo pipefail
+          cd openwrt
+          cat > .config <<'CFG'
+          CONFIG_TARGET_mediatek=y
+          CONFIG_TARGET_mediatek_filogic=y
+          CONFIG_TARGET_MULTI_PROFILE=y
+          CONFIG_TARGET_PER_DEVICE_ROOTFS=y
+          CONFIG_DEVEL=y
+          CONFIG_CCACHE=y
+          # 官方 immortalwrt 已自带 luci；这里显式打开，防止后续 defconfig 把 luci 收掉
+          # 导致 uhttpd 未选中（历史上踩过这个坑）。
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-app-store=y
+          CONFIG_PACKAGE_luci-lib-taskd=y
+          CONFIG_PACKAGE_luci-lib-xterm=y
+          CONFIG_PACKAGE_taskd=y
+          CONFIG_PACKAGE_libuci-lua=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_tar=y
+          CONFIG_PACKAGE_mount-utils=y
+          CONFIG_PACKAGE_xz=y
+          CONFIG_PACKAGE_xz-utils=y
+          CONFIG_PACKAGE_liblzma=y
+          CONFIG_PACKAGE_luci-compat=y
+          CONFIG_PACKAGE_luci-lua-runtime=y
+          CONFIG_LUCI_LANG_zh_Hans=y
+          # luci-app-store 依赖 !(TAR_XZ) || xz-utils，tar 会强制打开 TAR_XZ，这里补 xz-utils
+          # CONFIG_PACKAGE_TAR_XZ is not set
+          # PassWall：ImmortalWrt 官方 luci feed 原生包
+          CONFIG_PACKAGE_luci-app-passwall=y
+          # 可选组件：关掉 rust 与重依赖，避免 host 编译 rustc / Go 大件拖挂 make world
+          # CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Client is not set
+          # CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Server is not set
+          # CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria is not set
+          # CONFIG_PACKAGE_luci-app-passwall_INCLUDE_NaiveProxy is not set
+          # CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadow_TLS is not set
+          # CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Haproxy is not set
+          # CONFIG_PACKAGE_luci-app-passwall_INCLUDE_V2ray_Plugin is not set
+          # CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray_Plugin is not set
+          # CONFIG_PACKAGE_luci-app-passwall_INCLUDE_V2ray_Geodata is not set
+          # CONFIG_PACKAGE_luci-app-passwall_INCLUDE_V2ray_Geoview is not set
+          # CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SmartDNS is not set
+          CFG
+          sed -i 's/^          //' .config
+
+      - name: 主题 / iStore / 中文（沿用本仓库其他机型的 customize.sh）
+        run: |
+          # 部分仓库的 customize.sh 是 CRLF 行尾，直接执行会报 command not found
+          sed -i 's/\r$//' scripts/customize.sh
+          bash scripts/customize.sh openwrt
+
+      - name: 收敛到 xiaomi_redmi-router-ax6000-ubootmod + PassWall + 校验
+        run: |
+          set -euo pipefail
+          cd openwrt
+          python3 - <<'PY'
+          import io
+          import os
+          # libcryptopp（feeds/packages）：上游 install 把 .so 装到 usr/local/lib，
+          # Package/install 也按 usr/local/lib 拷，交叉环境该目录可能为空 →
+          # cp cannot stat libcryptopp.so*（6.6 仓库 rax3000me 即此）。
+          # 这里直接定义 Build/Install，从构建目录取产物。
+          p = 'package/feeds/packages/libs/libcryptopp/Makefile'
+          if os.path.exists(p):
+              s = io.open(p, encoding='utf-8').read()
+              if 'define Build/Install\n' not in s:
+                  s += ('\ndefine Build/Install\n'
+                        '\t$(INSTALL_DIR) $(PKG_INSTALL_DIR)/usr/local/lib $(PKG_INSTALL_DIR)/usr/local/lib/pkgconfig $(PKG_INSTALL_DIR)/usr/local/include/cryptopp\n'
+                        '\t-$(CP) $(PKG_BUILD_DIR)/libcryptopp.so* $(PKG_INSTALL_DIR)/usr/local/lib/\n'
+                        '\t-$(CP) $(PKG_BUILD_DIR)/libcryptopp.a $(PKG_INSTALL_DIR)/usr/local/lib/\n'
+                        '\t-$(CP) $(PKG_BUILD_DIR)/libcryptopp.pc $(PKG_INSTALL_DIR)/usr/local/lib/pkgconfig/\n'
+                        '\t-$(CP) $(PKG_BUILD_DIR)/*.h $(PKG_INSTALL_DIR)/usr/local/include/cryptopp/\n'
+                        'endef\n')
+                  io.open(p, 'w', encoding='utf-8').write(s)
+                  print('>>> libcryptopp: Build/Install 自建拷贝')
+          PY
+          echo 'CONFIG_IMAGEOPT=y' >> .config
+          echo 'CONFIG_VERSIONOPT=y' >> .config
+          make defconfig
+
+          python3 - "$DEVICE" <<'PY'
+          import sys
+          keep = 'CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_' + sys.argv[1]
+          off, out = [], []
+          for line in open('.config', encoding='utf-8', errors='surrogateescape'):
+              name = line.split('=')[0].replace('# ', '').split(' ')[0]
+              if name.startswith('CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_') and name != keep:
+                  off.append(name)
+                  continue
+              out.append(line)
+          for n in dict.fromkeys(off):
+              out.append('# %s is not set\n' % n)
+          out.append('%s=y\n' % keep)
+          open('.config', 'w', encoding='utf-8', errors='surrogateescape').writelines(out)
+          print('已关闭非目标机型：%d 个' % len(off))
+          PY
+          echo "CONFIG_TARGET_MULTI_PROFILE=y" >> .config
+
+          if [ -f package/base-files/image-config.in ]; then
+            sed -i "s/^\(\s*\)default \"OpenWrt\"$/\1default \"$DIST\"/" package/base-files/image-config.in
+          fi
+          if grep -q '^CONFIG_KERNEL_DEBUG_INFO_BTF=y$' .config; then
+            sed -i 's/^CONFIG_KERNEL_DEBUG_INFO_BTF=y/# CONFIG_KERNEL_DEBUG_INFO_BTF is not set/' .config
+          fi
+          # 沿用仓库策略：rust 系列 host 编译极易失败，非固件必需；PassWall 可选组件也一并收紧
+          for s in rust rustdesk-server luci-app-rustdesk-server luci-i18n-rustdesk-server-zh-cn shadowsocks-rust-sslocal shadowsocks-rust-ssmanager shadowsocks-rust-ssserver shadowsocks-rust-ssservice shadowsocks-rust-ssurl librespeed-cli-rust; do
+            echo "# CONFIG_PACKAGE_${s} is not set" >> .config
+          done
+          for s in Hysteria NaiveProxy Shadow_TLS Haproxy V2ray_Plugin Xray_Plugin V2ray_Geodata V2ray_Geoview SmartDNS Shadowsocks_Rust_Client Shadowsocks_Rust_Server; do
+            echo "# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_${s} is not set" >> .config
+          done
+          make defconfig
+          sed -i '/^CONFIG_VERSION_DIST=/d' .config
+          echo "CONFIG_VERSION_DIST=\"$DIST\"" >> .config
+
+          echo "===== 校验 ====="
+          grep -q "^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_${DEVICE}=y$" .config \
+            || { echo "::error::机型 ${DEVICE} 未生效"; exit 1; }
+          n_dev=$(grep -cE '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_.*=y$' .config || true)
+          [ "${n_dev:-0}" -eq 1 ] || { echo "::error::启用机型应为 1，实际 ${n_dev}"; exit 1; }
+          grep -q "^CONFIG_VERSION_DIST=\"$DIST\"$" .config || { echo "::error::发行名未生效"; exit 1; }
+
+          if ! grep -q '^CONFIG_PACKAGE_luci-app-store=y$' .config; then
+            echo "::warning::iStore 首次未生效，重试一次"
+            ./scripts/feeds install -f -p istore luci-app-store || true
+            ./scripts/feeds install -f -p istore luci-lib-taskd || true
+            printf 'CONFIG_PACKAGE_xz=y\nCONFIG_PACKAGE_xz-utils=y\nCONFIG_PACKAGE_liblzma=y\nCONFIG_PACKAGE_luci-lua-runtime=y\nCONFIG_PACKAGE_luci-app-store=y\n' >> .config
+            make defconfig
+          fi
+          grep -q '^CONFIG_PACKAGE_luci-app-store=y$' .config || { echo "::error::iStore 市场未生效"; exit 1; }
+          grep -q "^CONFIG_PACKAGE_luci-theme-${THEME}=y$" .config || { echo "::error::主题 ${THEME} 未生效"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_luci-i18n-base-zh-cn=y$' .config || { echo "::error::中文基础包未生效"; exit 1; }
+          grep -q '^CONFIG_LUCI_LANG_zh_Hans=y$' .config || { echo "::error::中文开关未开启"; exit 1; }
+          if ! grep -q '^CONFIG_PACKAGE_uhttpd=y$' .config; then
+            echo "::warning::uhttpd 未选中，补写 luci/uhttpd 后重建配置"
+            grep -nE '^#? ?CONFIG_PACKAGE_(luci|luci-light|uhttpd)=' .config | head -10 || true || true
+            printf 'CONFIG_PACKAGE_luci=y\nCONFIG_PACKAGE_uhttpd=y\n' >> .config
+            make defconfig
+          fi
+          grep -q '^CONFIG_PACKAGE_uhttpd=y$' .config || { echo "::error::uhttpd 未选中"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_dropbear=y$' .config || { echo "::error::dropbear 未选中"; exit 1; }
+          grep -qE '^CONFIG_PACKAGE_(wpad-basic-mbedtls|wpad-openssl|wpad-mbedtls|wpad)=y$' .config \
+            || { echo "::error::wpad 未选中，无线起不了 AP"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_luci-app-passwall=y$' .config \
+            || { echo "::error::PassWall 未选中"; exit 1; }
+          for s in Hysteria NaiveProxy Shadow_TLS Haproxy V2ray_Plugin Xray_Plugin V2ray_Geodata V2ray_Geoview SmartDNS Shadowsocks_Rust_Client Shadowsocks_Rust_Server; do
+            if grep -q "^CONFIG_PACKAGE_luci-app-passwall_INCLUDE_${s}=y$" .config; then
+              echo "::error::${s} 仍被选中（应关闭，避免 rust/重依赖拖挂）"; exit 1
+            fi
+          done
+          echo "✔ PassWall 已选中，rust / 重依赖可选组件已关闭"
+
+          # 首启双频无线：按 band 判断（不写死 path/phy），SSID 用本机型名
+          mkdir -p files/etc/uci-defaults
+          cat > files/etc/uci-defaults/97-redmi-ax6000-wifi <<'EOS'
+          #!/bin/sh
+          SSID_BASE='REDMI-AX6000'
+          i=0
+          while [ "$i" -lt 10 ]; do
+          	[ -n "$(ls -A /sys/class/ieee80211 2>/dev/null)" ] && break
+          	i=$((i + 1)); sleep 1
+          done
+          [ -f /etc/config/wireless ] || wifi config >/dev/null 2>&1 || true
+          [ -f /etc/config/wireless ] || exit 0
+          uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p' | while read -r r; do
+          	[ -n "$r" ] || continue
+          	band=$(uci -q get "wireless.$r.band")
+          	if [ -z "$band" ]; then
+          		case "$(uci -q get "wireless.$r.hwmode")" in
+          			11a|11ac|11ax|11be) band=5g ;;
+          			*) band=2g ;;
+          		esac
+          	fi
+          	suffix=2.4G
+          	[ "$band" = "5g" ] && suffix=5G
+          	[ "$band" = "6g" ] && suffix=6G
+          	uci -q set "wireless.$r.disabled=0"
+          	uci -q set "wireless.$r.country=CN"
+          	uci -q set "wireless.$r.ieee80211d=1"
+          	case "$band" in
+          		2g) uci -q set "wireless.$r.htmode=HE40" ;;
+          		*)  uci -q set "wireless.$r.channel=auto"; uci -q set "wireless.$r.htmode=HE160" ;;
+          	esac
+          	uci -q commit wireless
+          	idx=0
+          	while uci -q get "wireless.@wifi-iface[$idx]" >/dev/null 2>&1; do
+          		if [ "$(uci -q get "wireless.@wifi-iface[$idx].device")" = "$r" ]; then
+          			uci -q set "wireless.@wifi-iface[$idx].ssid=${SSID_BASE}-${suffix}"
+          			uci -q set "wireless.@wifi-iface[$idx].network=lan"
+          			uci -q set "wireless.@wifi-iface[$idx].disabled=0"
+          		fi
+          		idx=$((idx + 1))
+          	done
+          	uci -q commit wireless
+          done
+          exit 0
+          EOS
+          sed -i 's/^          //' files/etc/uci-defaults/97-redmi-ax6000-wifi
+          chmod 755 files/etc/uci-defaults/97-redmi-ax6000-wifi
+          test -x files/etc/uci-defaults/97-redmi-ax6000-wifi || { echo "::error::无线脚本缺失"; exit 1; }
+          echo "机型 $DEVICE（红米 AX6000 ubootmod 大分区，官方 DTS）/ 主题 $THEME / iStore + 中文 / PassWall 50 条访问控制 / 双频无线首启启用"
+
+      - name: 注入 PassWall 访问控制（50 条）
+        run: |
+          set -euo pipefail
+          cd openwrt
+          mkdir -p files/etc/uci-defaults
+          cat > files/etc/uci-defaults/98-passwall-acl <<'EOS'
+          #!/bin/sh
+          # PassWall 访问控制：50 条（源 10.0.0.2-10.0.0.51，模式=代理，源接口=全部）
+          [ -f /etc/config/passwall ] || exit 0
+          for s in $(uci -q show passwall | sed -n 's/^passwall\.\(cfg[0-9a-f]*\)=acl_rule$/\1/p'); do
+          	uci -q delete "passwall.$s"
+          done
+          uci -q batch <<'ACL_EOF'
+          set passwall.@global[0].acl_enable='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.174'
+          set passwall.@acl_rule[-1].sources='10.0.0.2'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.129'
+          set passwall.@acl_rule[-1].sources='10.0.0.3'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.158'
+          set passwall.@acl_rule[-1].sources='10.0.0.4'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.92'
+          set passwall.@acl_rule[-1].sources='10.0.0.5'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.42'
+          set passwall.@acl_rule[-1].sources='10.0.0.6'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.219'
+          set passwall.@acl_rule[-1].sources='10.0.0.7'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.38'
+          set passwall.@acl_rule[-1].sources='10.0.0.8'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.37'
+          set passwall.@acl_rule[-1].sources='10.0.0.9'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.11'
+          set passwall.@acl_rule[-1].sources='10.0.0.10'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.63'
+          set passwall.@acl_rule[-1].sources='10.0.0.11'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.56.146'
+          set passwall.@acl_rule[-1].sources='10.0.0.12'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.301'
+          set passwall.@acl_rule[-1].sources='10.0.0.13'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.302'
+          set passwall.@acl_rule[-1].sources='10.0.0.14'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.303'
+          set passwall.@acl_rule[-1].sources='10.0.0.15'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.304'
+          set passwall.@acl_rule[-1].sources='10.0.0.16'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.305'
+          set passwall.@acl_rule[-1].sources='10.0.0.17'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.306'
+          set passwall.@acl_rule[-1].sources='10.0.0.18'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.307'
+          set passwall.@acl_rule[-1].sources='10.0.0.19'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.308'
+          set passwall.@acl_rule[-1].sources='10.0.0.20'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.309'
+          set passwall.@acl_rule[-1].sources='10.0.0.21'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.310'
+          set passwall.@acl_rule[-1].sources='10.0.0.22'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.311'
+          set passwall.@acl_rule[-1].sources='10.0.0.23'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.312'
+          set passwall.@acl_rule[-1].sources='10.0.0.24'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.313'
+          set passwall.@acl_rule[-1].sources='10.0.0.25'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.314'
+          set passwall.@acl_rule[-1].sources='10.0.0.26'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.315'
+          set passwall.@acl_rule[-1].sources='10.0.0.27'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.316'
+          set passwall.@acl_rule[-1].sources='10.0.0.28'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.317'
+          set passwall.@acl_rule[-1].sources='10.0.0.29'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.318'
+          set passwall.@acl_rule[-1].sources='10.0.0.30'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.319'
+          set passwall.@acl_rule[-1].sources='10.0.0.31'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.320'
+          set passwall.@acl_rule[-1].sources='10.0.0.32'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.321'
+          set passwall.@acl_rule[-1].sources='10.0.0.33'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.322'
+          set passwall.@acl_rule[-1].sources='10.0.0.34'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.323'
+          set passwall.@acl_rule[-1].sources='10.0.0.35'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.324'
+          set passwall.@acl_rule[-1].sources='10.0.0.36'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.53.325'
+          set passwall.@acl_rule[-1].sources='10.0.0.37'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.56.326'
+          set passwall.@acl_rule[-1].sources='10.0.0.38'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.56.327'
+          set passwall.@acl_rule[-1].sources='10.0.0.39'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.56.328'
+          set passwall.@acl_rule[-1].sources='10.0.0.40'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.56.329'
+          set passwall.@acl_rule[-1].sources='10.0.0.41'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.56.330'
+          set passwall.@acl_rule[-1].sources='10.0.0.42'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.56.331'
+          set passwall.@acl_rule[-1].sources='10.0.0.43'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.56.332'
+          set passwall.@acl_rule[-1].sources='10.0.0.44'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.56.333'
+          set passwall.@acl_rule[-1].sources='10.0.0.45'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.56.334'
+          set passwall.@acl_rule[-1].sources='10.0.0.46'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.56.335'
+          set passwall.@acl_rule[-1].sources='10.0.0.47'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.56.336'
+          set passwall.@acl_rule[-1].sources='10.0.0.48'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.56.337'
+          set passwall.@acl_rule[-1].sources='10.0.0.49'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.56.338'
+          set passwall.@acl_rule[-1].sources='10.0.0.50'
+          set passwall.@acl_rule[-1].mode='1'
+          add passwall acl_rule
+          set passwall.@acl_rule[-1].enabled='1'
+          set passwall.@acl_rule[-1].remarks='133.157.56.339'
+          set passwall.@acl_rule[-1].sources='10.0.0.51'
+          set passwall.@acl_rule[-1].mode='1'
+          commit passwall
+          ACL_EOF
+          exit 0
+          EOS
+          sed -i 's/^          //' files/etc/uci-defaults/98-passwall-acl
+          chmod 755 files/etc/uci-defaults/98-passwall-acl
+          n=$(grep -c '^add passwall acl_rule$' files/etc/uci-defaults/98-passwall-acl || true)
+          [ "$n" -eq 50 ] || { echo "::error::访问控制条目应为 50，实际 $n"; exit 1; }
+          echo "✔ 已注入 $n 条 PassWall 访问控制（10.0.0.2 - 10.0.0.51）"
+
+      - name: 下载源码包
+        run: |
+          cd openwrt
+          make -j8 download < /dev/null || true
+          make -j1 download < /dev/null 2>&1 | tail -20 || true
+
+      - name: 编译固件
+        run: |
+          cd openwrt
+          export CCACHE_DIR CCACHE_MAXSIZE CCACHE_COMPRESS CCACHE_NOHASHDIR
+          mkdir -p "$CCACHE_DIR"
+          set -o pipefail
+          if make -j"$(nproc)" 2>&1 | tee build.log; then
+            echo ">>> ✅ 编译成功"
+          else
+            echo "::warning::并行编译失败，单线程复现"
+            fail="$(grep -o 'ERROR: [^ ]* failed to build' build.log | head -1 | awk '{print $2}')"
+            if [ -n "$fail" ]; then make -j1 V=s "$fail/compile" 2>&1 | tail -150 || true; else make -j1 V=s 2>&1 | tail -150 || true; fi
+            exit 1
+          fi
+
+      - name: 产物硬校验（官方设备产物齐全）
+        run: |
+          set -uo pipefail
+          B=openwrt/bin/targets/mediatek/filogic
+          test -d "$B" || { echo "::error::没有 $B 目录"; ls -R openwrt/bin/targets 2>/dev/null | head -40; exit 1; }
+          echo "===== bin/targets/mediatek/filogic ====="
+          ls -lh "$B" | head -40
+          miss=0
+          ls "$B"/*"$DEVICE"*squashfs-sysupgrade.itb >/dev/null 2>&1 \
+            || { echo "  [FAIL] 缺 sysupgrade.itb"; miss=$((miss+1)); }
+          ls "$B"/*"$DEVICE"*bl31-uboot.fip >/dev/null 2>&1 \
+            || { echo "  [FAIL] 缺 bl31-uboot.fip"; miss=$((miss+1)); }
+          ls "$B"/*"$DEVICE"*preloader.bin >/dev/null 2>&1 \
+            || { echo "  [FAIL] 缺 preloader.bin"; miss=$((miss+1)); }
+          [ "$miss" -eq 0 ] || { echo "::error::产物校验失败 $miss 项"; exit 1; }
+          echo "✔ 官方产物齐全（sysupgrade + FIP + preloader）"
+
+          KC=""
+          for _c in build_dir/target-*/linux-mediatek_filogic/linux-*/.config; do [ -f "$_c" ] && { KC="$_c"; break; }; done
+          if [ -n "$KC" ]; then
+            echo "===== 内核关键项 ====="
+            grep -E '^(CONFIG_NET_DSA_AN8855|CONFIG_NET_DSA_MT7530)=' "$KC" || true
+          fi
+
+      - name: 收集产物（sysupgrade.itb + FIP + preloader）
+        run: |
+          set -euo pipefail
+          B=openwrt/bin/targets/mediatek/filogic
+          mkdir -p out
+          shopt -s nullglob
+          shopt -s nullglob
+          for f in "$B"/*"$DEVICE"*; do
+            case "$f" in
+              *squashfs-sysupgrade.itb|*bl31-uboot.fip|*preloader.bin|*.manifest)
+                cp -f "$f" out/ ;;
+            esac
+          done
+          # 统一前缀（openwrt- / mediatek- → 仓库前缀）
+          for f in out/*; do
+            [ -e "$f" ] || continue
+            b=$(basename "$f")
+            case "$b" in
+              "$PREFIX"-*) : ;;
+              openwrt-*) mv -f "$f" "out/${PREFIX}-${b#openwrt-}" ;;
+              mediatek-*) mv -f "$f" "out/${PREFIX}-${b}" ;;
+            esac
+          done
+          sysup=( out/*squashfs-sysupgrade.itb )
+          [ "${#sysup[@]}" -eq 1 ] || {
+            echo "::error::期望正好 1 个 sysupgrade.itb，实际 ${#sysup[@]} 个"; ls -lh out; exit 1; }
+          fips=( out/*bl31-uboot.fip )
+          [ "${#fips[@]}" -eq 1 ] || {
+            echo "::error::期望正好 1 个 bl31-uboot.fip，实际 ${#fips[@]} 个"; ls out; exit 1; }
+          pre=( out/*preloader.bin )
+          [ "${#pre[@]}" -eq 1 ] || {
+            echo "::error::期望正好 1 个 preloader.bin，实际 ${#pre[@]} 个"; ls out; exit 1; }
+
+          # nullglob 下 `MAN=$(ls out/*.manifest)` 会退化成 `ls` 列当前目录，
+          # 曾把 BSDmakefile 当成清单 → 6 项全灭。用数组 + rootfs 包数据库兜底。
+          manif=( out/*.manifest )
+          MAN=""
+          if [ ${#manif[@]} -gt 0 ]; then MAN="${manif[0]}"; fi
+          PKGS=$(mktemp)
+          if [ -n "$MAN" ]; then
+            awk '{print $1}' "$MAN" | grep -v '^$' > "$PKGS" || true
+            echo "[info] 用 manifest 校验：$MAN"
+          else
+            PKGDB=$(find build_dir -maxdepth 5 -type f \( -path '*/apk/db/installed' -o -path '*/opkg/status' \) 2>/dev/null | head -1 || true)
+            if [ -n "$PKGDB" ]; then
+              case "$PKGDB" in
+              */apk/db/installed) sed -n 's/^P:\(.*\)$/\1/p' "$PKGDB" > "$PKGS" ;;
+                *) sed -n 's/^Package: \(.*\)$/\1/p' "$PKGDB" > "$PKGS" ;;
+              esac
+              echo "[info] 无 .manifest，改用 rootfs 包数据库校验：$PKGDB"
+            fi
+          fi
+          if [ ! -s "$PKGS" ]; then
+            echo "::warning::拿不到包清单（无 .manifest 且未找到 rootfs 包数据库），跳过端到端包校验"
+            ls -lh out || true
+          else
+            echo "===== 包清单校验（$(wc -l < "$PKGS") 个包）====="
+            miss=0
+            for k in kmod-mt7915e mt7986-wo-firmware luci-app-passwall luci-app-store "luci-theme-${THEME}" luci-i18n-base-zh-cn; do
+              if grep -qx "$k" "$PKGS"; then echo "  [ok] $k"; else echo "  [FAIL] 缺 $k"; miss=$((miss+1)); fi
+            done
+            if grep -qE '^(wpad-basic-mbedtls|wpad-openssl|wpad-mbedtls|wpad)$' "$PKGS"; then echo "  [ok] wpad"; else echo "  [FAIL] 缺 wpad"; miss=$((miss+1)); fi
+            [ "$miss" -eq 0 ] || { echo "::error::镜像清单校验失败 $miss 项"; exit 1; }
+          fi
+
+          ( cd out && sha256sum ./* > sha256sums.txt )
+          ls -lh out
+          {
+            echo "## 🏗️ 红米 AX6000 ubootmod 大分区（官方 25.12）编译完成"
+            echo ""
+            echo "- 源码：ImmortalWrt 官方 openwrt-25.12（xiaomi_redmi-router-ax6000-ubootmod 原生支持）"
+            echo "- 分区：官方 ubootmod 大分区（ubi 约 122MB），未改 DTS / 设备块 / U-Boot"
+            echo "- PassWall：50 条访问控制（10.0.0.2 - 10.0.0.51，模式=代理）"
+            echo ""
+            echo "| 文件 | 大小 |"
+            echo "|---|---|"
+            ls -lh out | tail -n +2 | awk '{printf "| %s | %s |\n", $9, $5}'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: images-redmi-ax6000-ubootmod
+          path: out/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: 上传编译日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-redmi-ax6000-ubootmod
+          path: |
+            openwrt/build.log
+            openwrt/.config
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: warn
+
+  release:
+    name: 📦 发布 lede-25.12-日期-redmi-ax6000-ubootmod
+    needs: build
+    if: ${{ always() && needs.build.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.make_release) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 下载产物
+        uses: actions/download-artifact@v4
+        with:
+          name: images-redmi-ax6000-ubootmod
+          path: rel
+
+      - name: 生成校验文件
+        run: |
+          cd rel
+          ls -lh
+          sha256sum ./* > sha256sums.txt
+
+      - name: 创建 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          DATE=$(TZ=Asia/Shanghai date +%Y%m%d)
+          TAG="${PREFIX}-${VERSION}-${DATE}-redmi-ax6000-ubootmod"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            TAG="${TAG}-r${GITHUB_RUN_NUMBER}"
+          fi
+          cat > notes.md <<'EOF'
+          Lede 25.12（immortalwrt/openwrt-25.12）· 红米 Redmi AX6000 ubootmod 大分区
+
+          - 机型：MT7986A，官方 `xiaomi_redmi-router-ax6000-ubootmod`，ubi 分区约 122MB（0x580000 + 0x7a80000）
+          - 源码：ImmortalWrt 官方 `openwrt-25.12`，DTS / filogic.mk 设备块 / U-Boot 变体全部来自官方，未改动
+          - 刷机：需先刷入 ubootmod 的 U-Boot（bl31-uboot.fip + preloader.bin），再用 sysupgrade.itb
+          - PassWall：官方 luci feed 原生包，预置 50 条访问控制（源 10.0.0.2-10.0.0.51，模式=代理，主开关已开）；
+            rust / 重依赖可选组件已关闭；全局代理开关保持默认关闭，加好节点后再开
+          - 无线：mt7915e，首启双频 AP `REDMI-AX6000-2.4G / REDMI-AX6000-5G`（CN、5G HE160、2.4G HE40）
+          - 界面：vantage + iStore 市场 + 全量简体中文 + 强制 zh_cn
+          - 产物：sysupgrade.itb + bl31-uboot.fip + preloader.bin
+          EOF
+          for i in 1 2 3 4 5; do
+            echo ">>> 第 $i 次上传"
+            if ! gh release view "$TAG" >/dev/null 2>&1; then
+              gh release create "$TAG" --title "Lede 25.12 · 红米 AX6000 ubootmod 大分区 · ${DATE}" --notes-file notes.md || true
+            fi
+            if gh release upload "$TAG" rel/* --clobber; then
+              echo ">>> 上传成功（第 $i 次）"; exit 0
+            fi
+            sleep $((i * 30))
+          done
+          echo "::error::Release 上传失败，产物已保留在 Actions artifacts"
+          exit 1
