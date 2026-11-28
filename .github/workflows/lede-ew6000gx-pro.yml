@@ -2,7 +2,7 @@
 #
 # 机型支持来源：chase535/immortalwrt-mt798x-6.6-cudy-wr3000v1
 #   dts/mt7986a-ruijie-ew-6000gx-pro*.dts(+dtsi)、filogic.mk 的 ruijie_ew-6000gx-pro* 定义、
-#   02_network / 11_fix_wifi_mac 的对应分支，已打包进 devices-pack/ew6000gx
+#   02_network / 11_fix_wifi_mac 的对应分支，已打包进 devices-pack/ew6000gxpro
 #
 # 本工作流直接编译本仓库（lede）源码树：注入设备包后 make defconfig & make
 # 默认固件：ruijie_ew-6000gx-pro（107M 布局 + sysupgrade-tar，沿用原厂 U-Boot）
@@ -23,7 +23,7 @@ concurrency:
 
 env:
   TZ: Asia/Shanghai
-  SLUG: ew6000gx
+  SLUG: ew6000gxpro
 
 jobs:
   build:
@@ -118,7 +118,7 @@ jobs:
             p="$(printf '%s' "$p" | tr -d '\r' | sed 's/[[:space:]]*$//')"
             case "$p" in ''|'#'*) continue ;; esac
             grep -q "^CONFIG_PACKAGE_${p}=y$" .config || { echo "::warning::包未生效: $p"; miss=$((miss+1)); }
-          done < devices-pack/ew6000gx/packages.txt
+          done < devices-pack/"$SLUG"/packages.txt
           total=$(grep -c '^CONFIG_PACKAGE_.*=y$' .config || true)
           echo "选中包总数: $total ；被丢弃: $miss"
           for k in luci uhttpd luci-mod-admin-full luci-theme-vantage luci-app-store \
