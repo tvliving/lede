@@ -383,6 +383,8 @@ jobs:
               'luci-compat', 'luci-lib-jsonc', 'microsocks', 'resolveip', 'tcping',
               'lyaml', 'libyaml', 'unzip', 'ipt2socks',
               'kmod-nft-socket', 'kmod-nft-tproxy', 'kmod-nft-nat',
+              # kmod-nft-socket / -tproxy 的运行库依赖（nf_socket_*/nf_tproxy_* .ko）
+              'kmod-nf-socket', 'kmod-nf-tproxy',
               'kmod-nf-reject', 'kmod-nf-reject6',
               'xray-core',
           ]
